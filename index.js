@@ -233,8 +233,21 @@ async function migrateDeleteUserChannelMessages({ userId, tracing = false } = {}
   console.log(`Deleted ${deletedCount} channel message(s) for user ${userId}`);
 }
 
-// Initialize bot
+// Initialize bot with error handling for readonly property issue
 const bot = new Telegraf(process.env.BOT_TOKEN);
+
+// Patch telegraf's error handling to avoid readonly property assignment
+const originalLaunch = bot.launch;
+bot.launch = function(...args) {
+  return originalLaunch.call(this, ...args).catch(error => {
+    // Handle the specific TypeError from telegraf's redactToken function
+    if (error.message && error.message.includes('Attempted to assign to readonly property')) {
+      console.error('Bot token configuration error. Please check your BOT_TOKEN environment variable.');
+      process.exit(1);
+    }
+    throw error;
+  });
+};
 const pendingActions = {}; // Structure: { "userId_chatId": action }
 const CHANNEL_USERNAME = '@CorrelationCenter';
 // Daily posting limits per user
