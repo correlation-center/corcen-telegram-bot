@@ -6,6 +6,7 @@ import { Telegraf, Markup } from 'telegraf';
 import Storage from './storage.js';
 import { v7 as uuidv7 } from 'uuid';
 import { buildUserMention } from './buildUserMention.js';
+import { getNewMatches } from './matching.js';
 import _ from 'lodash';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -536,6 +537,10 @@ async function addItem(ctx, type) {
   }
   user[field].push(item);
   await storage.writeDB();
+  
+  // Check for matches after adding the item
+  await checkForMatches(item, type, ctx.from.id);
+  
   // Send confirmation: private chat vs group chat
   // Use specialized translation in private chats to mention management commands
   const privateKey = type === 'need' ? 'needAddedPrivate' : 'resourceAddedPrivate';
@@ -548,6 +553,80 @@ async function addItem(ctx, type) {
 // Helper to format timestamps consistently
 function formatDate(ts) {
   return new Date(ts || Date.now()).toLocaleString();
+}
+
+// Helper to send match notifications to users
+async function sendMatchNotification(userId, match, itemType, itemDescription) {
+  try {
+    const user = await storage.getUserData(userId);
+    
+    // Check if user has matching enabled
+    if (!user.matchingEnabled) return;
+    
+    // Create a fake context for localization (use English as default)
+    const fakeCtx = { from: { language_code: 'en' } };
+    
+    const matchUser = buildUserMention({ user: match.item.user });
+    let message;
+    
+    if (itemType === 'need' && match.item.candidateType === 'resource') {
+      message = t(fakeCtx, 'matchNotificationNeedToResource', {
+        needDescription: itemDescription.substring(0, 50) + (itemDescription.length > 50 ? '...' : ''),
+        resourceDescription: match.item.description.substring(0, 50) + (match.item.description.length > 50 ? '...' : ''),
+        resourceUser: matchUser
+      });
+    } else if (itemType === 'need' && match.item.candidateType === 'need') {
+      message = t(fakeCtx, 'matchNotificationNeedToNeed', {
+        needDescription: itemDescription.substring(0, 50) + (itemDescription.length > 50 ? '...' : ''),
+        matchDescription: match.item.description.substring(0, 50) + (match.item.description.length > 50 ? '...' : ''),
+        matchUser: matchUser
+      });
+    } else if (itemType === 'resource' && match.item.candidateType === 'need') {
+      message = t(fakeCtx, 'matchNotificationResourceToNeed', {
+        resourceDescription: itemDescription.substring(0, 50) + (itemDescription.length > 50 ? '...' : ''),
+        needDescription: match.item.description.substring(0, 50) + (match.item.description.length > 50 ? '...' : ''),
+        needUser: matchUser
+      });
+    }
+    
+    if (message) {
+      const fullMessage = t(fakeCtx, 'matchFound') + '\n\n' + message;
+      const contactButton = Markup.button.url(
+        t(fakeCtx, 'contactUser', { user: matchUser }),
+        `tg://user?id=${match.item.user.id}`
+      );
+      
+      await bot.telegram.sendMessage(userId, fullMessage, {
+        parse_mode: 'HTML',
+        reply_markup: Markup.inlineKeyboard([contactButton])
+      });
+    }
+  } catch (error) {
+    console.error(`Failed to send match notification to user ${userId}:`, error);
+  }
+}
+
+// Helper to check for matches after adding an item
+async function checkForMatches(item, itemType, userId) {
+  try {
+    const itemWithType = { ...item, type: itemType };
+    const matches = await getNewMatches(itemWithType, storage, { threshold: 0.3, maxMatches: 3 });
+    
+    for (const match of matches) {
+      await sendMatchNotification(userId, match, itemType, item.description);
+      
+      // Also notify the matched user (bidirectional notifications)
+      if (match.item.user && match.item.user.id !== userId) {
+        const reverseItemType = match.item.candidateType;
+        const reverseMatch = {
+          item: { ...itemWithType, candidateType: itemType, user: item.user }
+        };
+        await sendMatchNotification(match.item.user.id, reverseMatch, reverseItemType, match.item.description);
+      }
+    }
+  } catch (error) {
+    console.error(`Failed to check for matches:`, error);
+  }
 }
 // Consolidated handlers for prompt, listing, and deletion of needs and resources
 const itemTypes = ['need', 'resource'];
@@ -847,6 +926,40 @@ bot.command('cancel', async (ctx) => {
     await ctx.reply(t(ctx, 'actionCancelled'));
   } else {
     await ctx.reply(t(ctx, 'noPendingAction'));
+  }
+});
+
+// Matching command to manage match notifications
+bot.command('matching', async (ctx) => {
+  // Only work in private chats for now
+  if (ctx.chat.type !== 'private') {
+    return;
+  }
+  
+  const args = ctx.message.text.split(' ').slice(1);
+  const user = await storage.getUserData(ctx.from.id);
+  
+  if (args.length === 0) {
+    // Show current status
+    const status = user.matchingEnabled ? 
+      t(ctx, 'matchingEnabled') : 
+      t(ctx, 'matchingDisabled');
+    await ctx.reply(t(ctx, 'matchingStatus', { 
+      status: user.matchingEnabled ? 'enabled' : 'disabled' 
+    }) + '\n\n' + status + '\n\n' + t(ctx, 'matchingHelp'));
+  } else if (args[0].toLowerCase() === 'on') {
+    // Enable matching
+    user.matchingEnabled = true;
+    await storage.writeDB();
+    await ctx.reply(t(ctx, 'matchingTurnedOn'));
+  } else if (args[0].toLowerCase() === 'off') {
+    // Disable matching
+    user.matchingEnabled = false;
+    await storage.writeDB();
+    await ctx.reply(t(ctx, 'matchingTurnedOff'));
+  } else {
+    // Show help
+    await ctx.reply(t(ctx, 'matchingHelp'));
   }
 });
 
