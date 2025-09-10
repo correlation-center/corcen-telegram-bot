@@ -28,5 +28,9 @@
   "limitResourcesPerDay": "You have already posted {{count}} resources in the last 24 hours. Limit is {{limit}} per day (rolling 24h window).",
   "actionCancelled": "Your current action has been canceled.",
   "noPendingAction": "You have no pending action to cancel.",
-  "anonymousNotAllowed": "Only personal accounts can create needs or resources."
+  "anonymousNotAllowed": "Only personal accounts can create needs or resources.",
+  "commentNotification": "💬 New comment on your {{type}}:",
+  "commentBy": "💭 Comment by {{commenter}}:",
+  "need": "need",
+  "resource": "resource"
 }

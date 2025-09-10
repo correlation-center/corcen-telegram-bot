@@ -250,6 +250,8 @@ bot.launch = function(...args) {
 };
 const pendingActions = {}; // Structure: { "userId_chatId": action }
 const CHANNEL_USERNAME = '@CorrelationCenter';
+// Discussion group ID for monitoring comments (set in .env file)
+const DISCUSSION_GROUP_ID = process.env.DISCUSSION_GROUP_ID;
 // Daily posting limits per user
 const DAILY_LIMITS = { need: 3, resource: 3 };
 // Delay (ms) before prompting user for description when pending action is set
@@ -305,6 +307,96 @@ function isBotSystemMessage(msg, botId) {
   if (!msg.text) return false;
   const variants = getAllBotMessageVariants();
   return variants.some(variant => msg.text.trim().startsWith(variant.trim()));
+}
+
+// Helper function to check if a message is a comment on a channel post
+function isCommentOnChannelPost(message) {
+  if (!message.reply_to_message) return false;
+  if (!message.reply_to_message.forward_from_chat) return false;
+  
+  const channelName = CHANNEL_USERNAME.startsWith('@') ? CHANNEL_USERNAME.slice(1) : CHANNEL_USERNAME;
+  return message.reply_to_message.forward_from_chat.username === channelName;
+}
+
+// Helper function to get the original channel message ID from a comment
+function getOriginalChannelMessageId(commentMessage) {
+  return commentMessage.reply_to_message?.forward_from_message_id;
+}
+
+// Helper function to find the original poster by channel message ID
+async function findOriginalPosterByChannelMessageId(channelMessageId) {
+  await storage.readDB();
+  const users = storage.db.data.users || {};
+  
+  for (const [userId, user] of Object.entries(users)) {
+    for (const type of ['needs', 'resources']) {
+      const items = user[type] || [];
+      for (const item of items) {
+        if (item.channelMessageId === channelMessageId) {
+          return {
+            userId: parseInt(userId),
+            type: type.slice(0, -1), // Convert 'needs' -> 'need', 'resources' -> 'resource'
+            item: item
+          };
+        }
+      }
+    }
+  }
+  return null;
+}
+
+// Helper function to send comment notification to original poster
+async function sendCommentNotification(ctx, originalPoster, commentMessage) {
+  const { userId, type, item } = originalPoster;
+  const commenter = commentMessage.from;
+  const commenterMention = buildUserMention({ user: commenter });
+  
+  // Get comment text, handling different message types
+  let commentText = '';
+  if (commentMessage.text) {
+    commentText = commentMessage.text.length > 100 
+      ? commentMessage.text.substring(0, 100) + '...' 
+      : commentMessage.text;
+  } else if (commentMessage.photo) {
+    commentText = commentMessage.caption || '[Photo]';
+  } else if (commentMessage.document) {
+    commentText = commentMessage.caption || '[Document]';
+  } else if (commentMessage.voice) {
+    commentText = '[Voice message]';
+  } else if (commentMessage.sticker) {
+    commentText = '[Sticker]';
+  } else {
+    commentText = '[Media]';
+  }
+  
+  // Create a fake context for the original poster to get their language
+  const userCtx = {
+    from: { language_code: 'en' } // Default to English if we can't determine user's language
+  };
+  
+  // Get localized type name
+  const localizedType = getLocalizedText(userCtx, type);
+  
+  const notificationText = `${getLocalizedText(userCtx, 'commentNotification', { type: localizedType })}\n\n` +
+    `"${item.description.length > 50 ? item.description.substring(0, 50) + '...' : item.description}"\n\n` +
+    `${getLocalizedText(userCtx, 'commentBy', { commenter: commenterMention })}\n${commentText}`;
+  
+  try {
+    await ctx.telegram.sendMessage(userId, notificationText, { parse_mode: 'HTML' });
+    console.log(`Comment notification sent to user ${userId} for ${type} message ${item.channelMessageId}`);
+  } catch (error) {
+    console.error(`Failed to send comment notification to user ${userId}:`, error);
+  }
+}
+
+// Helper function to get localized text
+function getLocalizedText(ctx, key, vars = {}) {
+  const lang = ctx.from && locales[ctx.from.language_code] ? ctx.from.language_code : 'en';
+  let text = (locales[lang].messages && locales[lang].messages[key]) || locales[lang][key] || locales['en'].messages?.[key] || locales['en'][key] || key;
+  Object.keys(vars).forEach((k) => {
+    text = text.replace(`{{${k}}}`, vars[k]);
+  });
+  return text;
 }
 
 // Helper to list items for both needs and resources
@@ -754,6 +846,24 @@ bot.start(async (ctx) => {
 
 // Handle all incoming messages (text or images) for adding items
 bot.on('message', async (ctx, next) => {
+  // Check if this is a comment on a channel post in the discussion group
+  if (DISCUSSION_GROUP_ID && ctx.chat.id.toString() === DISCUSSION_GROUP_ID.toString()) {
+    if (isCommentOnChannelPost(ctx.message)) {
+      const channelMessageId = getOriginalChannelMessageId(ctx.message);
+      if (channelMessageId) {
+        const originalPoster = await findOriginalPosterByChannelMessageId(channelMessageId);
+        if (originalPoster) {
+          // Don't notify if the commenter is the original poster
+          if (originalPoster.userId !== ctx.from.id) {
+            await sendCommentNotification(ctx, originalPoster, ctx.message);
+          }
+        }
+      }
+    }
+    // Don't process discussion group messages further
+    return;
+  }
+  
   // If user sent /cancel, bypass addItem so cancel command can run
   if (ctx.message.text && ctx.message.text.startsWith('/cancel')) return next();
   
