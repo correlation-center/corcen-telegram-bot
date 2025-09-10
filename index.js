@@ -700,6 +700,154 @@ itemTypes.forEach((type) => {
     await ctx.answerCbQuery(t(ctx, 'bumped'));
   });
 });
+// Helper to list profile entries for a user
+async function listProfiles(ctx) {
+  if (ctx.chat.type !== 'private') return;
+  const user = await storage.getUserData(ctx.from.id);
+  if (user.profiles.length === 0) {
+    return ctx.reply(t(ctx, 'noProfiles'));
+  }
+  for (let i = 0; i < user.profiles.length; i++) {
+    const profile = user.profiles[i];
+    const createdAt = formatDate(profile.createdAt);
+    const updatedAt = formatDate(profile.updatedAt);
+    
+    const buttons = [
+      Markup.button.callback(
+        t(ctx, 'deleteProfileButton') || 'Delete',
+        `delete_profile_${i}`
+      ),
+      Markup.button.callback(
+        t(ctx, 'editProfileButton') || 'Edit',
+        `edit_profile_${i}`
+      )
+    ];
+    
+    let message = `**${profile.title}**\n*${profile.question}*\n\n${profile.answer}\n\n${t(ctx, 'createdAt', { date: createdAt })}`;
+    if (profile.updatedAt && profile.updatedAt !== profile.createdAt) {
+      message += `\n${t(ctx, 'updatedAt', { date: updatedAt })}`;
+    }
+    
+    await ctx.reply(
+      message,
+      Markup.inlineKeyboard([buttons])
+    );
+  }
+}
+
+// Helper to add a new profile entry
+async function addProfile(ctx, question, title, answer) {
+  const user = await storage.getUserData(ctx.from.id);
+  const timestamp = new Date().toISOString();
+  
+  const profile = {
+    question: question.trim(),
+    title: title.trim(),
+    answer: answer.trim(),
+    createdAt: timestamp,
+    updatedAt: timestamp
+  };
+  
+  user.profiles.push(profile);
+  await storage.writeDB();
+  
+  await ctx.reply(t(ctx, 'profileAdded'));
+}
+
+// Profile command handlers
+const profilePendingActions = {}; // Structure: { "userId_chatId": { step, data } }
+
+// Profile creation command
+bot.command('profile', async (ctx) => {
+  if (ctx.chat.type !== 'private') {
+    await ctx.reply(t(ctx, 'profilesPrivateOnly'));
+    return;
+  }
+  
+  // Disallow anonymous (chat/channel) accounts
+  if (ctx.message.sender_chat) {
+    await ctx.reply(t(ctx, 'anonymousNotAllowed'));
+    return;
+  }
+  
+  const pendingKey = getPendingActionKey(ctx.from.id, ctx.chat.id);
+  profilePendingActions[pendingKey] = { step: 'question', data: {} };
+  await ctx.reply(t(ctx, 'promptProfileQuestion'));
+});
+
+// Profile listing command
+bot.command('profiles', async (ctx) => {
+  await listProfiles(ctx);
+});
+
+// Profile keyboard handlers
+bot.hears([
+  t({ from: { language_code: 'en' } }, 'buttonProfile'),
+  t({ from: { language_code: 'ru' } }, 'buttonProfile')
+], async (ctx) => {
+  if (ctx.chat.type !== 'private') {
+    await ctx.reply(t(ctx, 'profilesPrivateOnly'));
+    return;
+  }
+  
+  // Disallow anonymous (chat/channel) accounts
+  if (ctx.message.sender_chat) {
+    await ctx.reply(t(ctx, 'anonymousNotAllowed'));
+    return;
+  }
+  
+  const pendingKey = getPendingActionKey(ctx.from.id, ctx.chat.id);
+  profilePendingActions[pendingKey] = { step: 'question', data: {} };
+  await ctx.reply(t(ctx, 'promptProfileQuestion'));
+});
+
+bot.hears([
+  t({ from: { language_code: 'en' } }, 'buttonMyProfiles'),
+  t({ from: { language_code: 'ru' } }, 'buttonMyProfiles')
+], async (ctx) => {
+  // Disallow anonymous (chat/channel) accounts
+  if (ctx.message.sender_chat) {
+    await ctx.reply(t(ctx, 'anonymousNotAllowed'));
+    return;
+  }
+  await listProfiles(ctx);
+});
+
+// Profile action handlers
+bot.action(/delete_profile_(\d+)/, async (ctx) => {
+  const profileIndex = parseInt(ctx.match[1], 10);
+  const user = await storage.getUserData(ctx.from.id);
+  
+  if (profileIndex >= 0 && profileIndex < user.profiles.length) {
+    const removedProfile = user.profiles.splice(profileIndex, 1)[0];
+    await storage.writeDB();
+    
+    const deletedAt = formatDate();
+    await ctx.editMessageText(
+      `**${removedProfile.title}**\n*${removedProfile.question}*\n\n${removedProfile.answer}\n\n${t(ctx, 'createdAt', { date: formatDate(removedProfile.createdAt) })}\n${t(ctx, 'deletedAt', { date: deletedAt })}`
+    );
+  }
+  await ctx.answerCbQuery();
+});
+
+bot.action(/edit_profile_(\d+)/, async (ctx) => {
+  const profileIndex = parseInt(ctx.match[1], 10);
+  const user = await storage.getUserData(ctx.from.id);
+  
+  if (profileIndex >= 0 && profileIndex < user.profiles.length) {
+    const pendingKey = getPendingActionKey(ctx.from.id, ctx.chat.id);
+    profilePendingActions[pendingKey] = { 
+      step: 'question', 
+      data: { 
+        editIndex: profileIndex,
+        original: user.profiles[profileIndex]
+      }
+    };
+    await ctx.reply(t(ctx, 'promptProfileEditQuestion', { question: user.profiles[profileIndex].question }));
+  }
+  await ctx.answerCbQuery();
+});
+
 function getMainKeyboard(ctx) {
   // Build keyboard rows from itemTypes
   const newRow = itemTypes.map((type) =>
@@ -712,7 +860,8 @@ function getMainKeyboard(ctx) {
       const plural = `${type}s`;
       return t(ctx, `buttonMy${plural.charAt(0).toUpperCase() + plural.slice(1)}`);
     });
-    return Markup.keyboard([newRow, myRow]).resize();
+    const profileRow = [t(ctx, 'buttonProfile'), t(ctx, 'buttonMyProfiles')];
+    return Markup.keyboard([newRow, myRow, profileRow]).resize();
   } else {
     // In group chats, only show the "New need" and "New resource" buttons
     return Markup.keyboard([newRow]).resize();
@@ -757,6 +906,49 @@ bot.on('message', async (ctx, next) => {
   // If user sent /cancel, bypass addItem so cancel command can run
   if (ctx.message.text && ctx.message.text.startsWith('/cancel')) return next();
   
+  // Check for profile workflow first
+  const pendingKey = getPendingActionKey(ctx.from.id, ctx.chat.id);
+  const profileAction = profilePendingActions[pendingKey];
+  
+  if (profileAction && ctx.message.text) {
+    const text = ctx.message.text.trim();
+    
+    switch (profileAction.step) {
+      case 'question':
+        profileAction.data.question = text;
+        profileAction.step = 'title';
+        await ctx.reply(t(ctx, 'promptProfileTitle'));
+        return;
+        
+      case 'title':
+        profileAction.data.title = text;
+        profileAction.step = 'answer';
+        await ctx.reply(t(ctx, 'promptProfileAnswer'));
+        return;
+        
+      case 'answer':
+        profileAction.data.answer = text;
+        
+        if (profileAction.data.editIndex !== undefined) {
+          // Edit existing profile
+          const user = await storage.getUserData(ctx.from.id);
+          const profile = user.profiles[profileAction.data.editIndex];
+          profile.question = profileAction.data.question;
+          profile.title = profileAction.data.title;
+          profile.answer = profileAction.data.answer;
+          profile.updatedAt = new Date().toISOString();
+          await storage.writeDB();
+          await ctx.reply(t(ctx, 'profileUpdated'));
+        } else {
+          // Create new profile
+          await addProfile(ctx, profileAction.data.question, profileAction.data.title, profileAction.data.answer);
+        }
+        
+        delete profilePendingActions[pendingKey];
+        return;
+    }
+  }
+  
   // Check if this is a command-like text (clicked from help message)
   if (ctx.message.text && ctx.message.text.startsWith('/')) {
     const command = ctx.message.text.split(' ')[0].toLowerCase();
@@ -792,7 +984,6 @@ bot.on('message', async (ctx, next) => {
     }
   }
   
-  const pendingKey = getPendingActionKey(ctx.from.id, ctx.chat.id);
   const action = pendingActions[pendingKey];
   if (!action) return next();
   
@@ -821,6 +1012,66 @@ bot.on('message', async (ctx, next) => {
   await addItem(ctx, action);
 });
 
+// Search profiles command
+bot.command('search', async (ctx) => {
+  const searchTerm = ctx.message.text.replace('/search', '').trim();
+  
+  if (!searchTerm) {
+    await ctx.reply(t(ctx, 'promptSearchTerm'));
+    return;
+  }
+  
+  await storage.readDB();
+  const allUsers = storage.db.data.users || {};
+  const results = [];
+  
+  for (const [userId, userData] of Object.entries(allUsers)) {
+    if (userData.profiles) {
+      for (const profile of userData.profiles) {
+        const searchText = `${profile.question} ${profile.title} ${profile.answer}`.toLowerCase();
+        if (searchText.includes(searchTerm.toLowerCase())) {
+          results.push({
+            userId,
+            profile,
+            userData
+          });
+        }
+      }
+    }
+  }
+  
+  if (results.length === 0) {
+    await ctx.reply(t(ctx, 'noSearchResults', { term: searchTerm }));
+    return;
+  }
+  
+  await ctx.reply(t(ctx, 'searchResults', { count: results.length, term: searchTerm }));
+  
+  for (const result of results.slice(0, 10)) { // Limit to first 10 results
+    let userMention = 'Unknown user';
+    
+    // Try to get user info for mention
+    try {
+      const chat = await ctx.telegram.getChat(result.userId);
+      userMention = buildUserMention({ user: chat });
+    } catch (err) {
+      // Fallback to stored user info if available
+      if (result.userData.needs && result.userData.needs.length > 0 && result.userData.needs[0].user) {
+        userMention = buildUserMention({ user: result.userData.needs[0].user });
+      } else if (result.userData.resources && result.userData.resources.length > 0 && result.userData.resources[0].user) {
+        userMention = buildUserMention({ user: result.userData.resources[0].user });
+      }
+    }
+    
+    const message = `**${result.profile.title}**\n*${result.profile.question}*\n\n${result.profile.answer}\n\n<i>Profile of ${userMention}</i>`;
+    await ctx.reply(message, { parse_mode: 'HTML' });
+  }
+  
+  if (results.length > 10) {
+    await ctx.reply(t(ctx, 'searchResultsLimited', { shown: 10, total: results.length }));
+  }
+});
+
 // Help command: private vs group
 bot.command('help', async (ctx) => {
   if (ctx.chat.type === 'private') {
@@ -842,8 +1093,9 @@ bot.command('help', async (ctx) => {
 // Cancel any pending action
 bot.command('cancel', async (ctx) => {
   const pendingKey = getPendingActionKey(ctx.from.id, ctx.chat.id);
-  if (pendingActions[pendingKey]) {
+  if (pendingActions[pendingKey] || profilePendingActions[pendingKey]) {
     delete pendingActions[pendingKey];
+    delete profilePendingActions[pendingKey];
     await ctx.reply(t(ctx, 'actionCancelled'));
   } else {
     await ctx.reply(t(ctx, 'noPendingAction'));
