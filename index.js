@@ -193,6 +193,48 @@ async function deleteChannelMessage({ telegram, channel, msgId, tracing = false 
   }
 }
 
+// Insert archiveChannelMessage helper function to mark items as archived while preserving description
+async function archiveChannelMessage({ telegram, channel, msgId, originalContent, tracing = false }) {
+  try {
+    if (tracing) console.log(`archiveChannelMessage: trying to delete message ${msgId}`);
+    await telegram.deleteMessage(channel, msgId);
+    return true;
+  } catch (err) {
+    const desc = err.response?.description || err.message;
+    if (/message to delete not found/i.test(desc)) {
+      if (tracing) console.log(`archiveChannelMessage: message ${msgId} already gone`);
+      return true;
+    } else if (/message can'?t be deleted/i.test(desc)) {
+      if (tracing) console.log(`archiveChannelMessage: message ${msgId} can't be deleted, marking as archived`);
+      let edited = false;
+      try {
+        // Keep original content but mark as ARCHIVED
+        const archivedContent = `${originalContent}\n\n<i>ARCHIVED</i>`;
+        await telegram.editMessageText(channel, msgId, undefined, archivedContent, { parse_mode: 'HTML' });
+        edited = true;
+      } catch (editErr) {
+        const desc2 = editErr.response?.description || editErr.message;
+        if (/MESSAGE_ID_INVALID/i.test(desc2)) {
+          // fallback to editing caption
+          try {
+            const archivedContent = `${originalContent}\n\n<i>ARCHIVED</i>`;
+            await telegram.editMessageCaption(channel, msgId, undefined, archivedContent, { parse_mode: 'HTML' });
+            edited = true;
+          } catch (editErr2) {
+            if (tracing) console.error(`archiveChannelMessage: failed to edit caption for message ${msgId}`, editErr2);
+          }
+        } else {
+          if (tracing) console.error(`archiveChannelMessage: failed to edit message ${msgId}`, editErr);
+        }
+      }
+      return edited;
+    } else {
+      if (tracing) console.error(`archiveChannelMessage: failed to delete message ${msgId}`, err);
+      return false;
+    }
+  }
+}
+
 /**
  * Delete channel messages for a given unreachable user.
  * @param {Object} options
@@ -314,11 +356,13 @@ async function listItems(ctx, type) {
   const plural = `${type}s`;
   const capitalized = type.charAt(0).toUpperCase() + type.slice(1);
   const capitalizedPlural = plural.charAt(0).toUpperCase() + plural.slice(1);
-  if (user[plural].length === 0) {
+  // Filter out archived items for normal listing
+  const activeItems = user[plural].filter(item => !item.archivedAt);
+  if (activeItems.length === 0) {
     return ctx.reply(t(ctx, `no${capitalizedPlural}`));
   }
-  for (let i = 0; i < user[plural].length; i++) {
-    const item = user[plural][i];
+  for (let i = 0; i < activeItems.length; i++) {
+    const item = activeItems[i];
     const createdAt = formatDate(item.createdAt);
     const updatedAt = formatDate(item.updatedAt);
     // Build delete (and optional bump) buttons, keyed by channelMessageId
@@ -455,7 +499,7 @@ async function addItem(ctx, type) {
   const sinceTs = Date.now() - 24 * 60 * 60 * 1000;
   const recentItems = _.filter(
     user[fieldKey],
-    (item) => new Date(item.createdAt).getTime() >= sinceTs
+    (item) => new Date(item.createdAt).getTime() >= sinceTs && !item.archivedAt
   );
   const limitKey = type === 'need' ? 'limitNeedsPerDay' : 'limitResourcesPerDay';
   const limit = DAILY_LIMITS[type];
@@ -630,19 +674,35 @@ itemTypes.forEach((type) => {
     const msgId = parseInt(ctx.match[1], 10);
     const user = await storage.getUserData(ctx.from.id);
     const collection = user[plural];
-    // Remove items matching channelMessageId
-    const removedItems = _.remove(collection, (it) => it.channelMessageId === msgId);
-    if (!removedItems.length) {
+    // Find item matching channelMessageId
+    const item = _.find(collection, (it) => it.channelMessageId === msgId);
+    if (!item) {
       return ctx.answerCbQuery('Not found');
     }
-    const removed = removedItems[0];
-    // Use helper to delete or mark as deleted
-    await deleteChannelMessage({ telegram: ctx.telegram, channel: CHANNEL_USERNAME, msgId });
+    
+    // Mark item as archived instead of removing it
+    const archivedAt = new Date().toISOString();
+    item.archivedAt = archivedAt;
+    
+    // Build original content for channel message archiving
+    const mention = buildUserMention({ user: item.user || ctx.from });
+    const originalContent = type === 'need' 
+      ? `${item.description}\n\n<i>Need of ${mention}.</i>`
+      : `${item.description}\n\n<i>Resource provided by ${mention}.</i>`;
+    
+    // Use helper to archive the channel message
+    await archiveChannelMessage({ 
+      telegram: ctx.telegram, 
+      channel: CHANNEL_USERNAME, 
+      msgId, 
+      originalContent 
+    });
+    
     await storage.writeDB();
-    const createdAt = formatDate(removed.createdAt);
-    const deletedAt = formatDate();
+    const createdAt = formatDate(item.createdAt);
+    const archivedAtFormatted = formatDate(archivedAt);
     await ctx.editMessageText(
-      `${removed.description}\n\n${t(ctx, 'createdAt', { date: createdAt })}\n${t(ctx, 'deletedAt', { date: deletedAt })}`
+      `${item.description}\n\n${t(ctx, 'createdAt', { date: createdAt })}\n${t(ctx, 'archivedAt', { date: archivedAtFormatted })}`
     );
     // answer the callback query to remove loading state
     await ctx.answerCbQuery();
@@ -656,7 +716,7 @@ itemTypes.forEach((type) => {
     const user = await storage.getUserData(ctx.from.id);
     const items = user[plural];
     const item = _.find(items, (it) => it.channelMessageId === msgId);
-    if (!item) return ctx.answerCbQuery('Not found');
+    if (!item || item.archivedAt) return ctx.answerCbQuery('Not found');
     // Repair missing or damaged user info from ctx.from
     if (!item.user || item.user.id !== ctx.from.id) {
       item.user = {
