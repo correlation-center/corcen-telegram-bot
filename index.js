@@ -32,6 +32,65 @@ const storage = new Storage();
 await storage.initDB();
 
 /**
+ * Simple search query matching function.
+ * Supports basic keyword matching with AND logic (all keywords must be present).
+ * @param {string} searchQuery - The user's search query
+ * @param {string} resourceDescription - The resource description to match against
+ * @returns {boolean} - True if the resource matches the search query
+ */
+function matchesSearchQuery(searchQuery, resourceDescription) {
+  if (!searchQuery || !resourceDescription) return false;
+  
+  const queryTerms = searchQuery.toLowerCase().split(/\s+/).filter(term => term.length > 0);
+  const description = resourceDescription.toLowerCase();
+  
+  // All query terms must be present in the description (AND logic)
+  return queryTerms.every(term => description.includes(term));
+}
+
+/**
+ * Check if a new resource matches any active searches and send notifications.
+ * @param {Object} resource - The newly added resource
+ * @param {Object} resourceOwner - The user who posted the resource
+ */
+async function checkAndNotifySearchMatches(resource, resourceOwner) {
+  await storage.readDB();
+  const users = storage.db.data.users || {};
+  
+  for (const [userId, userData] of Object.entries(users)) {
+    // Skip the resource owner
+    if (userId === String(resourceOwner.id)) continue;
+    
+    const searches = userData.searches || [];
+    
+    for (const search of searches) {
+      if (search.active && matchesSearchQuery(search.query, resource.description)) {
+        try {
+          // Send notification to the user
+          const resourceMention = buildUserMention({ user: resourceOwner });
+          const notificationText = `🔍 **Search Match Found!**\n\nYour search "${search.query}" matched a new resource:\n\n${resource.description}\n\n*Resource provided by ${resourceMention}.*\n\nPosted in ${CHANNEL_USERNAME}`;
+          
+          await bot.telegram.sendMessage(
+            userId,
+            notificationText,
+            { parse_mode: 'Markdown' }
+          );
+          
+          // Update search statistics
+          search.matchCount = (search.matchCount || 0) + 1;
+          search.lastMatch = new Date().toISOString();
+        } catch (error) {
+          console.error(`Failed to send search notification to user ${userId}:`, error);
+        }
+      }
+    }
+  }
+  
+  // Save any updates to search statistics
+  await storage.writeDB();
+}
+
+/**
  * Migrate old user mentions to clickable mentions.
  * @param {Object} [options]
  * @param {number} [options.limit=Number(process.env.MIGRATE_LIMIT)||1] - Max items to migrate per run.
@@ -536,6 +595,12 @@ async function addItem(ctx, type) {
   }
   user[field].push(item);
   await storage.writeDB();
+  
+  // Check for search matches if this is a resource
+  if (type === 'resource') {
+    await checkAndNotifySearchMatches(item, ctx.from);
+  }
+  
   // Send confirmation: private chat vs group chat
   // Use specialized translation in private chats to mention management commands
   const privateKey = type === 'need' ? 'needAddedPrivate' : 'resourceAddedPrivate';
@@ -549,6 +614,140 @@ async function addItem(ctx, type) {
 function formatDate(ts) {
   return new Date(ts || Date.now()).toLocaleString();
 }
+
+// Helper to add a new search
+async function addSearch(ctx) {
+  if (ctx.chat.type !== 'private') {
+    await ctx.reply(t(ctx, 'searchPrivateOnly'));
+    return;
+  }
+  
+  let query = '';
+  
+  // If command used as a reply, take replied message as input
+  if (ctx.message.text && ctx.message.text.startsWith('/') && ctx.message.reply_to_message) {
+    // Check if this is a command reply (like /search to a help message)
+    if (isBotSystemMessage(ctx.message.reply_to_message, bot.botInfo.id)) {
+      // Don't treat command replies as content to use
+      await ctx.reply(t(ctx, 'promptSearch'));
+      return;
+    }
+    
+    const replied = ctx.message.reply_to_message;
+    if (replied.text) {
+      query = replied.text.trim();
+    }
+  } else {
+    // Prepare and reject commands as input
+    if (ctx.message.text && ctx.message.text.startsWith('/')) {
+      await ctx.reply(t(ctx, 'promptSearch'));
+      return;
+    }
+    
+    // Support text input
+    if (ctx.message.text) {
+      query = ctx.message.text.trim();
+    }
+  }
+  
+  if (!query) {
+    await ctx.reply(t(ctx, 'promptSearch'));
+    return;
+  }
+  
+  // Additional safety check: prevent bot system message content from being used
+  if (query) {
+    const variants = getAllBotMessageVariants();
+    const isSystemMessageContent = variants.some(variant => 
+      query.trim().startsWith(variant.trim())
+    );
+    if (isSystemMessageContent) {
+      // This looks like a bot system message content, don't use it
+      await ctx.reply(t(ctx, 'promptSearch'));
+      return;
+    }
+  }
+  
+  const user = await storage.getUserData(ctx.from.id);
+  
+  // Check if search already exists
+  const existingSearch = user.searches.find(s => s.query.toLowerCase() === query.toLowerCase());
+  if (existingSearch) {
+    if (existingSearch.active) {
+      await ctx.reply(t(ctx, 'searchAlreadyExists'));
+    } else {
+      // Reactivate existing search
+      existingSearch.active = true;
+      existingSearch.updatedAt = new Date().toISOString();
+      await storage.writeDB();
+      await ctx.reply(t(ctx, 'searchReactivated'));
+    }
+    return;
+  }
+  
+  const timestamp = new Date().toISOString();
+  const search = {
+    query,
+    active: true,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    matchCount: 0,
+    lastMatch: null
+  };
+  
+  user.searches.push(search);
+  await storage.writeDB();
+  
+  await ctx.reply(t(ctx, 'searchAdded', { query }));
+  const pendingKey = getPendingActionKey(ctx.from.id, ctx.chat.id);
+  delete pendingActions[pendingKey];
+}
+
+// Helper to list searches
+async function listSearches(ctx) {
+  if (ctx.chat.type !== 'private') return;
+  
+  const user = await storage.getUserData(ctx.from.id);
+  if (user.searches.length === 0) {
+    return ctx.reply(t(ctx, 'noSearches'));
+  }
+  
+  for (let i = 0; i < user.searches.length; i++) {
+    const search = user.searches[i];
+    const createdAt = formatDate(search.createdAt);
+    const updatedAt = formatDate(search.updatedAt);
+    
+    // Build action buttons
+    const searchId = i; // Use array index as ID
+    const buttons = [
+      Markup.button.callback(
+        search.active ? t(ctx, 'pauseSearchButton') : t(ctx, 'resumeSearchButton'),
+        `toggle_search_${searchId}`
+      ),
+      Markup.button.callback(
+        t(ctx, 'deleteSearchButton'),
+        `delete_search_${searchId}`
+      )
+    ];
+    
+    // Status and statistics
+    const status = search.active ? '🟢 Active' : '⏸️ Paused';
+    const matches = search.matchCount || 0;
+    const lastMatch = search.lastMatch ? formatDate(search.lastMatch) : t(ctx, 'noMatches');
+    
+    let message = `🔍 "${search.query}"\n\n${status}\n${t(ctx, 'matches', { count: matches })}`;
+    if (matches > 0) {
+      message += `\n${t(ctx, 'lastMatch', { date: lastMatch })}`;
+    }
+    message += `\n\n${t(ctx, 'createdAt', { date: createdAt })}`;
+    if (search.updatedAt && search.updatedAt !== search.createdAt) {
+      message += `\n${t(ctx, 'updatedAt', { date: updatedAt })}`;
+    }
+    
+    await ctx.reply(message, Markup.inlineKeyboard([buttons]));
+  }
+}
+
 // Consolidated handlers for prompt, listing, and deletion of needs and resources
 const itemTypes = ['need', 'resource'];
 itemTypes.forEach((type) => {
@@ -700,6 +899,141 @@ itemTypes.forEach((type) => {
     await ctx.answerCbQuery(t(ctx, 'bumped'));
   });
 });
+
+// Search keyboard button handlers
+bot.hears([
+  t({ from: { language_code: 'en' } }, 'buttonSearch'),
+  t({ from: { language_code: 'ru' } }, 'buttonSearch')
+], async (ctx) => {
+  // Disallow anonymous (chat/channel) accounts from creating searches
+  if (ctx.message.sender_chat) {
+    await ctx.reply(t(ctx, 'anonymousNotAllowed'));
+    return;
+  }
+  // Keyboard-triggered same flow with delayed prompt
+  const pendingKey = getPendingActionKey(ctx.from.id, ctx.chat.id);
+  pendingActions[pendingKey] = 'search';
+  setTimeout(() => {
+    if (pendingActions[pendingKey] === 'search') {
+      ctx.reply(t(ctx, 'promptSearch'));
+    }
+  }, PROMPT_DELAY_MS);
+});
+
+bot.hears([
+  t({ from: { language_code: 'en' } }, 'buttonMySearches'),
+  t({ from: { language_code: 'ru' } }, 'buttonMySearches')
+], async (ctx) => {
+  // Disallow anonymous (chat/channel) accounts from creating searches
+  if (ctx.message.sender_chat) {
+    await ctx.reply(t(ctx, 'anonymousNotAllowed'));
+    return;
+  }
+  await listSearches(ctx);
+});
+
+// Search command handlers
+bot.command('search', async (ctx) => {
+  // Disallow anonymous (chat/channel) accounts from creating searches
+  if (ctx.message.sender_chat) {
+    await ctx.reply(t(ctx, 'anonymousNotAllowed'));
+    return;
+  }
+
+  // Check if this is a reply to a help/start message
+  if (ctx.message.reply_to_message) {
+    if (isBotSystemMessage(ctx.message.reply_to_message, bot.botInfo.id)) {
+      // Just switch to the new mode without publishing
+      const pendingKey = getPendingActionKey(ctx.from.id, ctx.chat.id);
+      pendingActions[pendingKey] = 'search';
+      await ctx.reply(t(ctx, 'promptSearch'));
+      return;
+    }
+
+    // For other replies, proceed with normal addSearch logic
+    return addSearch(ctx);
+  }
+
+  // Set pending and schedule prompt after delay
+  const pendingKey = getPendingActionKey(ctx.from.id, ctx.chat.id);
+  pendingActions[pendingKey] = 'search';
+  setTimeout(() => {
+    if (pendingActions[pendingKey] === 'search') {
+      ctx.reply(t(ctx, 'promptSearch'));
+    }
+  }, PROMPT_DELAY_MS);
+});
+
+bot.command('searches', async (ctx) => {
+  await listSearches(ctx);
+});
+
+// Search action handlers
+bot.action(/toggle_search_(\d+)/, async (ctx) => {
+  const searchId = parseInt(ctx.match[1], 10);
+  const user = await storage.getUserData(ctx.from.id);
+  
+  if (!user.searches[searchId]) {
+    return ctx.answerCbQuery('Search not found');
+  }
+  
+  const search = user.searches[searchId];
+  search.active = !search.active;
+  search.updatedAt = new Date().toISOString();
+  
+  await storage.writeDB();
+  
+  // Update the message with new button state
+  const createdAt = formatDate(search.createdAt);
+  const updatedAt = formatDate(search.updatedAt);
+  const status = search.active ? '🟢 Active' : '⏸️ Paused';
+  const matches = search.matchCount || 0;
+  const lastMatch = search.lastMatch ? formatDate(search.lastMatch) : t(ctx, 'noMatches');
+  
+  let message = `🔍 "${search.query}"\n\n${status}\n${t(ctx, 'matches', { count: matches })}`;
+  if (matches > 0) {
+    message += `\n${t(ctx, 'lastMatch', { date: lastMatch })}`;
+  }
+  message += `\n\n${t(ctx, 'createdAt', { date: createdAt })}\n${t(ctx, 'updatedAt', { date: updatedAt })}`;
+  
+  const buttons = [
+    Markup.button.callback(
+      search.active ? t(ctx, 'pauseSearchButton') : t(ctx, 'resumeSearchButton'),
+      `toggle_search_${searchId}`
+    ),
+    Markup.button.callback(
+      t(ctx, 'deleteSearchButton'),
+      `delete_search_${searchId}`
+    )
+  ];
+  
+  await ctx.editMessageText(message, Markup.inlineKeyboard([buttons]));
+  await ctx.answerCbQuery(search.active ? t(ctx, 'searchResumed') : t(ctx, 'searchPaused'));
+});
+
+bot.action(/delete_search_(\d+)/, async (ctx) => {
+  const searchId = parseInt(ctx.match[1], 10);
+  const user = await storage.getUserData(ctx.from.id);
+  
+  if (!user.searches[searchId]) {
+    return ctx.answerCbQuery('Search not found');
+  }
+  
+  const search = user.searches[searchId];
+  user.searches.splice(searchId, 1);
+  
+  await storage.writeDB();
+  
+  const createdAt = formatDate(search.createdAt);
+  const deletedAt = formatDate();
+  
+  await ctx.editMessageText(
+    `🔍 "${search.query}"\n\n${t(ctx, 'createdAt', { date: createdAt })}\n${t(ctx, 'deletedAt', { date: deletedAt })}`
+  );
+  
+  await ctx.answerCbQuery(t(ctx, 'searchDeleted'));
+});
+
 function getMainKeyboard(ctx) {
   // Build keyboard rows from itemTypes
   const newRow = itemTypes.map((type) =>
@@ -712,7 +1046,8 @@ function getMainKeyboard(ctx) {
       const plural = `${type}s`;
       return t(ctx, `buttonMy${plural.charAt(0).toUpperCase() + plural.slice(1)}`);
     });
-    return Markup.keyboard([newRow, myRow]).resize();
+    const searchRow = [t(ctx, 'buttonSearch'), t(ctx, 'buttonMySearches')];
+    return Markup.keyboard([newRow, myRow, searchRow]).resize();
   } else {
     // In group chats, only show the "New need" and "New resource" buttons
     return Markup.keyboard([newRow]).resize();
@@ -790,6 +1125,33 @@ bot.on('message', async (ctx, next) => {
       }, PROMPT_DELAY_MS);
       return;
     }
+    
+    if (command === '/search') {
+      // Handle search command like text
+      // Check if this is a reply to a bot system message
+      if (ctx.message.reply_to_message && isBotSystemMessage(ctx.message.reply_to_message, bot.botInfo.id)) {
+        // Just switch to the new mode without publishing
+        const pendingKey = getPendingActionKey(ctx.from.id, ctx.chat.id);
+        pendingActions[pendingKey] = 'search';
+        await ctx.reply(t(ctx, 'promptSearch'));
+        return;
+      }
+      
+      // For other replies, proceed with normal addSearch logic
+      if (ctx.message.reply_to_message) {
+        return addSearch(ctx);
+      }
+      
+      // Set pending and schedule prompt after delay
+      const pendingKey = getPendingActionKey(ctx.from.id, ctx.chat.id);
+      pendingActions[pendingKey] = 'search';
+      setTimeout(() => {
+        if (pendingActions[pendingKey] === 'search') {
+          ctx.reply(t(ctx, 'promptSearch'));
+        }
+      }, PROMPT_DELAY_MS);
+      return;
+    }
   }
   
   const pendingKey = getPendingActionKey(ctx.from.id, ctx.chat.id);
@@ -818,7 +1180,11 @@ bot.on('message', async (ctx, next) => {
     }
   }
   
-  await addItem(ctx, action);
+  if (action === 'search') {
+    await addSearch(ctx);
+  } else {
+    await addItem(ctx, action);
+  }
 });
 
 // Help command: private vs group

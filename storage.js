@@ -18,7 +18,11 @@ class Storage {
     this.db.data ||= { users: {} };
     const id = String(userId);
     if (!this.db.data.users[id]) {
-      this.db.data.users[id] = { needs: [], resources: [] };
+      this.db.data.users[id] = { needs: [], resources: [], searches: [] };
+    }
+    // Ensure existing users have searches field
+    if (!this.db.data.users[id].searches) {
+      this.db.data.users[id].searches = [];
     }
     return this.db.data.users[id];
   }
