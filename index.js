@@ -321,12 +321,16 @@ async function listItems(ctx, type) {
     const item = user[plural][i];
     const createdAt = formatDate(item.createdAt);
     const updatedAt = formatDate(item.updatedAt);
-    // Build delete (and optional bump) buttons, keyed by channelMessageId
+    // Build delete, edit, and optional bump buttons, keyed by channelMessageId
     const delId = item.channelMessageId;
     const buttons = [
       Markup.button.callback(
         t(ctx, `delete${capitalized}Button`) || 'Delete',
         `delete_${type}_${delId}`
+      ),
+      Markup.button.callback(
+        t(ctx, `edit${capitalized}Button`) || 'Edit',
+        `edit_${type}_${delId}`
       )
     ];
     const last = new Date(item.updatedAt || item.createdAt);
@@ -545,6 +549,81 @@ async function addItem(ctx, type) {
   const pendingKey = getPendingActionKey(ctx.from.id, ctx.chat.id);
   delete pendingActions[pendingKey];
 }
+
+// Helper to handle editing an existing item
+async function handleEditItem(ctx, action) {
+  // Parse action: edit_need_123 or edit_resource_456
+  const [, type, msgIdStr] = action.split('_');
+  const msgId = parseInt(msgIdStr, 10);
+  
+  const user = await storage.getUserData(ctx.from.id);
+  const plural = `${type}s`;
+  const collection = user[plural];
+  
+  // Find the item to edit
+  const item = _.find(collection, (it) => it.channelMessageId === msgId);
+  if (!item) {
+    await ctx.reply('Item not found.');
+    const pendingKey = getPendingActionKey(ctx.from.id, ctx.chat.id);
+    delete pendingActions[pendingKey];
+    return;
+  }
+
+  // Get new description from message
+  let newDescription = '';
+  if (ctx.message.text) {
+    newDescription = ctx.message.text.trim();
+  } else if (ctx.message.caption) {
+    newDescription = ctx.message.caption.trim();
+  }
+
+  if (!newDescription) {
+    const capitalized = type.charAt(0).toUpperCase() + type.slice(1);
+    const promptKey = `promptEdit${capitalized}`;
+    await ctx.reply(t(ctx, promptKey));
+    return;
+  }
+
+  // Update the item in the database
+  item.description = newDescription;
+  item.updatedAt = new Date().toISOString();
+
+  // Update the channel message
+  try {
+    const mention = buildUserMention({ user: item.user || ctx.from });
+    const content = `${newDescription}\n\n<i>${
+      type === 'need' ? 'Need of ' + mention : 'Resource provided by ' + mention
+    }.</i>`;
+
+    if (item.fileId) {
+      await ctx.telegram.editMessageCaption(
+        CHANNEL_USERNAME,
+        msgId,
+        undefined,
+        content,
+        { parse_mode: 'HTML' }
+      );
+    } else {
+      await ctx.telegram.editMessageText(
+        CHANNEL_USERNAME,
+        msgId,
+        undefined,
+        content,
+        { parse_mode: 'HTML' }
+      );
+    }
+  } catch (err) {
+    console.error(`Failed to edit channel message ${msgId}:`, err);
+    // Continue anyway - at least update the local database
+  }
+
+  await storage.writeDB();
+  await ctx.reply(`Your ${type} has been updated.`);
+  
+  const pendingKey = getPendingActionKey(ctx.from.id, ctx.chat.id);
+  delete pendingActions[pendingKey];
+}
+
 // Helper to format timestamps consistently
 function formatDate(ts) {
   return new Date(ts || Date.now()).toLocaleString();
@@ -646,6 +725,28 @@ itemTypes.forEach((type) => {
     );
     // answer the callback query to remove loading state
     await ctx.answerCbQuery();
+  });
+
+  // Edit handlers
+  bot.action(new RegExp(`edit_${type}_(\\d+)`), async (ctx) => {
+    const msgId = parseInt(ctx.match[1], 10);
+    const user = await storage.getUserData(ctx.from.id);
+    const collection = user[plural];
+    // Find item matching channelMessageId
+    const item = _.find(collection, (it) => it.channelMessageId === msgId);
+    if (!item) {
+      return ctx.answerCbQuery('Not found');
+    }
+    
+    // Set pending edit action
+    const pendingKey = getPendingActionKey(ctx.from.id, ctx.chat.id);
+    pendingActions[pendingKey] = `edit_${type}_${msgId}`;
+    
+    // Prompt for new description
+    const capitalized = type.charAt(0).toUpperCase() + type.slice(1);
+    const promptKey = `promptEdit${capitalized}`;
+    await ctx.answerCbQuery();
+    await ctx.reply(t(ctx, promptKey));
   });
 });
 // Bump handlers to refresh old messages in the channel
@@ -818,7 +919,12 @@ bot.on('message', async (ctx, next) => {
     }
   }
   
-  await addItem(ctx, action);
+  // Handle edit actions vs regular add actions
+  if (action.startsWith('edit_')) {
+    await handleEditItem(ctx, action);
+  } else {
+    await addItem(ctx, action);
+  }
 });
 
 // Help command: private vs group
