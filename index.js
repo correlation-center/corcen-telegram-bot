@@ -233,21 +233,35 @@ async function migrateDeleteUserChannelMessages({ userId, tracing = false } = {}
   console.log(`Deleted ${deletedCount} channel message(s) for user ${userId}`);
 }
 
-// Initialize bot with error handling for readonly property issue
-const bot = new Telegraf(process.env.BOT_TOKEN);
-
-// Patch telegraf's error handling to avoid readonly property assignment
-const originalLaunch = bot.launch;
-bot.launch = function(...args) {
-  return originalLaunch.call(this, ...args).catch(error => {
-    // Handle the specific TypeError from telegraf's redactToken function
+// Wrap bot initialization with comprehensive error handling for readonly property issue
+const bot = (() => {
+  // Set up global error handler for unhandled exceptions during bot operations
+  const originalHandler = process.listeners('uncaughtException');
+  process.removeAllListeners('uncaughtException');
+  
+  process.on('uncaughtException', (error) => {
     if (error.message && error.message.includes('Attempted to assign to readonly property')) {
-      console.error('Bot token configuration error. Please check your BOT_TOKEN environment variable.');
+      console.error('Fatal error: Bot token configuration error.');
+      console.error('This is typically caused by an invalid BOT_TOKEN or network connectivity issues.');
+      console.error('Please verify your BOT_TOKEN environment variable and internet connection.');
       process.exit(1);
     }
-    throw error;
+    
+    // Re-emit to original handlers if not our error
+    originalHandler.forEach(handler => handler(error));
+    if (originalHandler.length === 0) {
+      console.error('Uncaught Exception:', error);
+      process.exit(1);
+    }
   });
-};
+  
+  try {
+    return new Telegraf(process.env.BOT_TOKEN);
+  } catch (error) {
+    console.error('Failed to initialize Telegram bot:', error.message);
+    process.exit(1);
+  }
+})();
 const pendingActions = {}; // Structure: { "userId_chatId": action }
 const CHANNEL_USERNAME = '@CorrelationCenter';
 // Daily posting limits per user
