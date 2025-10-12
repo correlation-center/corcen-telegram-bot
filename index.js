@@ -3,7 +3,7 @@ import { fileURLToPath } from 'url';
 import fs from 'fs';
 import path from 'path';
 import { Telegraf, Markup } from 'telegraf';
-import Storage from './storage.js';
+import StorageWithLog from './storageWithLog.js';
 import { v7 as uuidv7 } from 'uuid';
 import { buildUserMention } from './buildUserMention.js';
 import _ from 'lodash';
@@ -27,8 +27,35 @@ function t(ctx, key, vars = {}) {
   return text;
 }
 
-// Initialize database
-const storage = new Storage();
+// Initialize bot (needed for storage initialization)
+const bot = new Telegraf(process.env.BOT_TOKEN);
+
+// Patch telegraf's error handling to avoid readonly property issue
+const originalLaunch = bot.launch;
+bot.launch = function(...args) {
+  return originalLaunch.call(this, ...args).catch(error => {
+    // Handle the specific TypeError from telegraf's redactToken function
+    if (error.message && error.message.includes('Attempted to assign to readonly property')) {
+      console.error('Bot token configuration error. Please check your BOT_TOKEN environment variable.');
+      process.exit(1);
+    }
+    throw error;
+  });
+};
+
+// Initialize database with public logging (if PUBLIC_LOG_CHANNEL is set)
+const PUBLIC_LOG_CHANNEL = process.env.PUBLIC_LOG_CHANNEL;
+const storage = PUBLIC_LOG_CHANNEL
+  ? new StorageWithLog({
+      telegram: bot.telegram,
+      logChannel: PUBLIC_LOG_CHANNEL,
+      tracing: process.env.PUBLIC_LOG_TRACING === 'true'
+    })
+  : new StorageWithLog({
+      telegram: bot.telegram,
+      logChannel: null, // No public logging
+      tracing: false
+    });
 await storage.initDB();
 
 /**
@@ -233,21 +260,7 @@ async function migrateDeleteUserChannelMessages({ userId, tracing = false } = {}
   console.log(`Deleted ${deletedCount} channel message(s) for user ${userId}`);
 }
 
-// Initialize bot with error handling for readonly property issue
-const bot = new Telegraf(process.env.BOT_TOKEN);
-
-// Patch telegraf's error handling to avoid readonly property assignment
-const originalLaunch = bot.launch;
-bot.launch = function(...args) {
-  return originalLaunch.call(this, ...args).catch(error => {
-    // Handle the specific TypeError from telegraf's redactToken function
-    if (error.message && error.message.includes('Attempted to assign to readonly property')) {
-      console.error('Bot token configuration error. Please check your BOT_TOKEN environment variable.');
-      process.exit(1);
-    }
-    throw error;
-  });
-};
+// Bot is already initialized above (before storage initialization)
 const pendingActions = {}; // Structure: { "userId_chatId": action }
 const CHANNEL_USERNAME = '@CorrelationCenter';
 // Daily posting limits per user
