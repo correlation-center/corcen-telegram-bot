@@ -28,20 +28,35 @@ function t(ctx, key, vars = {}) {
 }
 
 // Initialize bot (needed for storage initialization)
-const bot = new Telegraf(process.env.BOT_TOKEN);
+// Wrap bot initialization with comprehensive error handling for readonly property issue
+const bot = (() => {
+  // Set up global error handler for unhandled exceptions during bot operations
+  const originalHandler = process.listeners('uncaughtException');
+  process.removeAllListeners('uncaughtException');
 
-// Patch telegraf's error handling to avoid readonly property issue
-const originalLaunch = bot.launch;
-bot.launch = function(...args) {
-  return originalLaunch.call(this, ...args).catch(error => {
-    // Handle the specific TypeError from telegraf's redactToken function
+  process.on('uncaughtException', (error) => {
     if (error.message && error.message.includes('Attempted to assign to readonly property')) {
-      console.error('Bot token configuration error. Please check your BOT_TOKEN environment variable.');
+      console.error('Fatal error: Bot token configuration error.');
+      console.error('This is typically caused by an invalid BOT_TOKEN or network connectivity issues.');
+      console.error('Please verify your BOT_TOKEN environment variable and internet connection.');
       process.exit(1);
     }
-    throw error;
+
+    // Re-emit to original handlers if not our error
+    originalHandler.forEach(handler => handler(error));
+    if (originalHandler.length === 0) {
+      console.error('Uncaught Exception:', error);
+      process.exit(1);
+    }
   });
-};
+
+  try {
+    return new Telegraf(process.env.BOT_TOKEN);
+  } catch (error) {
+    console.error('Failed to initialize Telegram bot:', error.message);
+    process.exit(1);
+  }
+})();
 
 // Initialize database with public logging (if PUBLIC_LOG_CHANNEL is set)
 const PUBLIC_LOG_CHANNEL = process.env.PUBLIC_LOG_CHANNEL;
@@ -318,6 +333,37 @@ function isBotSystemMessage(msg, botId) {
   if (!msg.text) return false;
   const variants = getAllBotMessageVariants();
   return variants.some(variant => msg.text.trim().startsWith(variant.trim()));
+}
+
+// Helper function to check if a message is a prompt message (for need/resource description)
+// Returns the type ('need' or 'resource') if it's a prompt message, or null otherwise
+function getBotPromptMessageType(msg, botId) {
+  if (!msg || !msg.from || msg.from.id !== botId) return null;
+  if (!msg.text) return null;
+
+  const needPrompts = [];
+  const resourcePrompts = [];
+
+  for (const lang of Object.keys(locales)) {
+    if (locales[lang].messages) {
+      if (locales[lang].messages.promptNeed) {
+        needPrompts.push(locales[lang].messages.promptNeed);
+      }
+      if (locales[lang].messages.promptResource) {
+        resourcePrompts.push(locales[lang].messages.promptResource);
+      }
+    }
+  }
+
+  const text = msg.text.trim();
+  if (needPrompts.some(variant => text.startsWith(variant.trim()))) {
+    return 'need';
+  }
+  if (resourcePrompts.some(variant => text.startsWith(variant.trim()))) {
+    return 'resource';
+  }
+
+  return null;
 }
 
 // Helper to list items for both needs and resources
@@ -806,10 +852,27 @@ bot.on('message', async (ctx, next) => {
   }
   
   const pendingKey = getPendingActionKey(ctx.from.id, ctx.chat.id);
-  const action = pendingActions[pendingKey];
+  let action = pendingActions[pendingKey];
+
+  // Check if this is a reply to a bot prompt message - if so, process it as description
+  const promptType = ctx.message.reply_to_message
+    ? getBotPromptMessageType(ctx.message.reply_to_message, bot.botInfo.id)
+    : null;
+
+  if (promptType) {
+    // This is a reply to the prompt message, use that type (even if no pending action)
+    action = promptType;
+    // Set the pending action if not already set
+    if (!pendingActions[pendingKey]) {
+      pendingActions[pendingKey] = promptType;
+    }
+    await addItem(ctx, action);
+    return;
+  }
+
   if (!action) return next();
-  
-  // Check if this is a reply to a bot system message
+
+  // Check if this is a reply to a bot system message (but not a prompt message)
   if (ctx.message.reply_to_message && isBotSystemMessage(ctx.message.reply_to_message, bot.botInfo.id)) {
     // Don't publish bot system messages, just switch to the new mode
     const promptKey = `prompt${action.charAt(0).toUpperCase() + action.slice(1)}`;
