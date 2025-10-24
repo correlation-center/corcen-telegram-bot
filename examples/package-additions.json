@@ -1,0 +1,16 @@
+{
+  "description": "Additional dependencies needed for VK integration and consensus sync",
+  "dependencies": {
+    "vk-io": "^4.8.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0"
+  },
+  "scripts": {
+    "test:consensus": "node examples/test-consensus-sync.js",
+    "sync:platforms": "node -e \"import('./examples/consensus-integration.js').then(m => m.runSync())\""
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  }
+}
