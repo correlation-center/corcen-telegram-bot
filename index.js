@@ -403,6 +403,7 @@ async function addItem(ctx, type) {
 
   let description = '';
   let fileId = null;
+  let location = null;
   // Detect forwarded messages from channel to strip auto-appended lines
   const channelName = CHANNEL_USERNAME.startsWith('@') ? CHANNEL_USERNAME.slice(1) : CHANNEL_USERNAME;
   const isFromChannelMsg = ctx.message.forward_from_chat && ctx.message.forward_from_chat.username === channelName;
@@ -474,10 +475,31 @@ async function addItem(ctx, type) {
         if (lines.length >= 3) raw = lines.slice(0, -2).join('\n').trim();
       }
       description = raw;
+    } else if (ctx.message.location) {
+      location = {
+        latitude: ctx.message.location.latitude,
+        longitude: ctx.message.location.longitude,
+        type: 'location'
+      };
+      if (ctx.message.location.live_period) {
+        location.live_period = ctx.message.location.live_period;
+        location.is_live = true;
+      }
+    } else if (ctx.message.venue) {
+      location = {
+        latitude: ctx.message.venue.location.latitude,
+        longitude: ctx.message.venue.location.longitude,
+        type: 'venue',
+        title: ctx.message.venue.title,
+        address: ctx.message.venue.address
+      };
+      if (ctx.message.venue.foursquare_id) {
+        location.foursquare_id = ctx.message.venue.foursquare_id;
+      }
     }
   }
 
-  if (!description && !fileId) {
+  if (!description && !fileId && !location) {
     await ctx.reply(t(ctx, promptKey));
     return;
   }
@@ -514,14 +536,38 @@ async function addItem(ctx, type) {
     need: {
       field: 'needs',
       role: 'requestor',
-      channelTemplate: (description, from) =>
-        `${description}\n\n<i>Need of ${buildUserMention({ user: from })}.</i>`
+      channelTemplate: (description, from, item) => {
+        let content = `${description}\n\n<i>Need of ${buildUserMention({ user: from })}.</i>`;
+        if (item.location) {
+          if (item.location.type === 'venue') {
+            content += `\n📍 ${item.location.title} - ${item.location.address}`;
+          } else {
+            content += `\n📍 Location: ${item.location.latitude}, ${item.location.longitude}`;
+            if (item.location.is_live) {
+              content += ' (Live location)';
+            }
+          }
+        }
+        return content;
+      }
     },
     resource: {
       field: 'resources',
       role: 'supplier',
-      channelTemplate: (description, from) =>
-        `${description}\n\n<i>Resource provided by ${buildUserMention({ user: from })}.</i>`
+      channelTemplate: (description, from, item) => {
+        let content = `${description}\n\n<i>Resource provided by ${buildUserMention({ user: from })}.</i>`;
+        if (item.location) {
+          if (item.location.type === 'venue') {
+            content += `\n📍 ${item.location.title} - ${item.location.address}`;
+          } else {
+            content += `\n📍 Location: ${item.location.latitude}, ${item.location.longitude}`;
+            if (item.location.is_live) {
+              content += ' (Live location)';
+            }
+          }
+        }
+        return content;
+      }
     }
   };
   const { field, role, channelTemplate } = config[type];
@@ -541,6 +587,7 @@ async function addItem(ctx, type) {
     updatedAt: timestamp
   };
   if (fileId) item.fileId = fileId;
+  if (location) item.location = location;
   try {
     let post;
     if (ENABLE_REPOSTS) {
@@ -566,12 +613,55 @@ async function addItem(ctx, type) {
       post = await ctx.telegram.sendPhoto(
         CHANNEL_USERNAME,
         fileId,
-        { caption: channelTemplate(item.description, ctx.from), parse_mode: 'HTML' }
+        { caption: channelTemplate(item.description, ctx.from, item), parse_mode: 'HTML' }
       );
+    } else if (location && location.type === 'location') {
+      // Send location to channel
+      post = await ctx.telegram.sendLocation(
+        CHANNEL_USERNAME,
+        location.latitude,
+        location.longitude,
+        location.live_period ? { live_period: location.live_period } : {}
+      );
+      // Follow up with description
+      const messageText = item.description || 'Location shared';
+      await ctx.telegram.sendMessage(
+        CHANNEL_USERNAME,
+        channelTemplate(messageText, ctx.from, item),
+        { parse_mode: 'HTML', reply_to_message_id: post.message_id }
+      );
+    } else if (location && location.type === 'venue') {
+      // Send venue to channel
+      post = await ctx.telegram.sendVenue(
+        CHANNEL_USERNAME,
+        location.latitude,
+        location.longitude,
+        location.title,
+        location.address,
+        location.foursquare_id ? { foursquare_id: location.foursquare_id } : {}
+      );
+      // Follow up with description if provided
+      if (item.description) {
+        await ctx.telegram.sendMessage(
+          CHANNEL_USERNAME,
+          channelTemplate(item.description, ctx.from, item),
+          { parse_mode: 'HTML', reply_to_message_id: post.message_id }
+        );
+      } else {
+        // Send just the mention info
+        const messageText = 'Venue shared';
+        await ctx.telegram.sendMessage(
+          CHANNEL_USERNAME,
+          channelTemplate(messageText, ctx.from, item),
+          { parse_mode: 'HTML', reply_to_message_id: post.message_id }
+        );
+      }
     } else {
+      // Handle location-only messages
+      const messageText = item.description || (item.location ? 'Location shared' : '');
       post = await ctx.telegram.sendMessage(
         CHANNEL_USERNAME,
-        channelTemplate(item.description, ctx.from),
+        channelTemplate(messageText, ctx.from, item),
         { parse_mode: 'HTML' }
       );
     }
