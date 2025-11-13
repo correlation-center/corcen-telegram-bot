@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@flla/telegram-format": "^3.1.2",
+    "@linksplatform/protocols-lino": "^0.7.0",
     "dotenv": "^16.0.0",
     "lodash": "^4.17.21",
     "lowdb": "^3.0.0",
