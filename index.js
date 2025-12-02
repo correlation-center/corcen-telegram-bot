@@ -313,6 +313,54 @@ function getAllBotMessageVariants() {
   return Array.from(variants);
 }
 
+// Helper to parse custom parameters from user input
+function parseCustomParams(text) {
+  const params = {};
+  if (!text) return params;
+  
+  // Look for key:value patterns (allow everything except newlines)
+  const paramRegex = /(\w+):\s*([^\n\r]+)/g;
+  let match;
+  while ((match = paramRegex.exec(text)) !== null) {
+    const key = match[1].trim().toLowerCase();
+    const value = match[2].trim();
+    if (key && value) {
+      params[key] = value;
+    }
+  }
+  return params;
+}
+
+// Helper to format custom parameters for display
+function formatCustomParams(params) {
+  if (!params || Object.keys(params).length === 0) return '';
+  
+  const formatted = Object.entries(params)
+    .map(([key, value]) => `<b>${key}:</b> ${value}`)
+    .join('\n');
+  
+  return formatted ? `\n\n${formatted}` : '';
+}
+
+// Helper to strip custom parameters from description
+function stripCustomParams(text) {
+  if (!text) return text;
+  
+  // Split text into lines
+  const lines = text.split('\n');
+  const cleanLines = [];
+  
+  for (const line of lines) {
+    // Check if line matches param pattern
+    if (!/^\w+:\s*/.test(line.trim())) {
+      cleanLines.push(line);
+    }
+  }
+  
+  // Join back and clean up excessive newlines
+  return cleanLines.join('\n').replace(/\n\s*\n\s*\n+/g, '\n\n').trim();
+}
+
 // Helper function to check if a message is a help/start/prompt message from our bot
 function isBotSystemMessage(msg, botId) {
   if (!msg || !msg.from || msg.from.id !== botId) return false;
@@ -386,7 +434,7 @@ async function listItems(ctx, type) {
       );
     }
     // Localized creation and update timestamps
-    let message = `${item.description}\n\n${t(ctx, 'createdAt', { date: createdAt })}`;
+    let message = `${item.description}${formatCustomParams(item.customParams)}\n\n${t(ctx, 'createdAt', { date: createdAt })}`;
     if (item.updatedAt && item.updatedAt !== item.createdAt) {
       message += `\n${t(ctx, 'updatedAt', { date: updatedAt })}`;
     }
@@ -514,17 +562,21 @@ async function addItem(ctx, type) {
     need: {
       field: 'needs',
       role: 'requestor',
-      channelTemplate: (description, from) =>
-        `${description}\n\n<i>Need of ${buildUserMention({ user: from })}.</i>`
+      channelTemplate: (description, from, customParams = {}) =>
+        `${description}${formatCustomParams(customParams)}\n\n<i>Need of ${buildUserMention({ user: from })}.</i>`
     },
     resource: {
       field: 'resources',
       role: 'supplier',
-      channelTemplate: (description, from) =>
-        `${description}\n\n<i>Resource provided by ${buildUserMention({ user: from })}.</i>`
+      channelTemplate: (description, from, customParams = {}) =>
+        `${description}${formatCustomParams(customParams)}\n\n<i>Resource provided by ${buildUserMention({ user: from })}.</i>`
     }
   };
   const { field, role, channelTemplate } = config[type];
+  // Parse custom parameters from description
+  const customParams = parseCustomParams(description);
+  const cleanDescription = stripCustomParams(description);
+  
   const timestamp = new Date().toISOString();
   const item = {
     // Persist full user info for later mentions (e.g. bump)
@@ -536,7 +588,8 @@ async function addItem(ctx, type) {
     },
     [role]: ctx.from.username || ctx.from.first_name || 'unknown',
     guid: uuidv7(),
-    description,
+    description: cleanDescription,
+    customParams,
     createdAt: timestamp,
     updatedAt: timestamp
   };
@@ -566,12 +619,12 @@ async function addItem(ctx, type) {
       post = await ctx.telegram.sendPhoto(
         CHANNEL_USERNAME,
         fileId,
-        { caption: channelTemplate(item.description, ctx.from), parse_mode: 'HTML' }
+        { caption: channelTemplate(item.description, ctx.from, item.customParams), parse_mode: 'HTML' }
       );
     } else {
       post = await ctx.telegram.sendMessage(
         CHANNEL_USERNAME,
-        channelTemplate(item.description, ctx.from),
+        channelTemplate(item.description, ctx.from, item.customParams),
         { parse_mode: 'HTML' }
       );
     }
@@ -715,7 +768,7 @@ itemTypes.forEach((type) => {
     await deleteChannelMessage({ telegram: ctx.telegram, channel: CHANNEL_USERNAME, msgId });
     // Build mention from repaired item.user
     const mention = buildUserMention({ user: item.user });
-    const content = `${item.description}\n\n<i>${
+    const content = `${item.description}${formatCustomParams(item.customParams)}\n\n<i>${
       type === 'need' ? 'Need of ' + mention : 'Resource provided by ' + mention
     }.</i>`;
     let post;
@@ -734,7 +787,7 @@ itemTypes.forEach((type) => {
     const createdAtStr = formatDate(item.createdAt);
     const updatedAtStr = formatDate();
     await ctx.editMessageText(
-      `${item.description}\n\n${t(ctx, 'createdAt', { date: createdAtStr })}\n${t(ctx, 'updatedAt', { date: updatedAtStr })}`,
+      `${item.description}${formatCustomParams(item.customParams)}\n\n${t(ctx, 'createdAt', { date: createdAtStr })}\n${t(ctx, 'updatedAt', { date: updatedAtStr })}`,
       Markup.inlineKeyboard([
         [Markup.button.callback(
           t(ctx, deleteButtonKey),
@@ -910,6 +963,65 @@ bot.command('cancel', async (ctx) => {
   } else {
     await ctx.reply(t(ctx, 'noPendingAction'));
   }
+});
+
+// Profile management commands
+bot.command('profile', async (ctx) => {
+  if (ctx.chat.type !== 'private') return;
+  
+  const user = await storage.getUserData(ctx.from.id);
+  const customParams = user.profile?.customParams || {};
+  
+  if (Object.keys(customParams).length === 0) {
+    await ctx.reply(t(ctx, 'noProfileParams'));
+  } else {
+    const formattedParams = Object.entries(customParams)
+      .map(([key, value]) => `<b>${key}:</b> ${value}`)
+      .join('\n');
+    
+    await ctx.reply(`${t(ctx, 'yourProfile')}\n\n${formattedParams}`, 
+      { 
+        parse_mode: 'HTML',
+        reply_markup: Markup.inlineKeyboard([
+          [Markup.button.callback(t(ctx, 'editProfileButton'), 'edit_profile')]
+        ])
+      });
+  }
+});
+
+bot.command('setprofile', async (ctx) => {
+  if (ctx.chat.type !== 'private') return;
+  
+  const args = ctx.message.text.split(' ').slice(1).join(' ');
+  if (!args) {
+    await ctx.reply(t(ctx, 'setProfileHelp'));
+    return;
+  }
+  
+  const user = await storage.getUserData(ctx.from.id);
+  if (!user.profile) user.profile = { customParams: {} };
+  
+  const newParams = parseCustomParams(args);
+  if (Object.keys(newParams).length === 0) {
+    await ctx.reply(t(ctx, 'noValidParams'));
+    return;
+  }
+  
+  // Merge new parameters with existing ones
+  user.profile.customParams = { ...user.profile.customParams, ...newParams };
+  await storage.writeDB();
+  
+  const formattedParams = Object.entries(newParams)
+    .map(([key, value]) => `<b>${key}:</b> ${value}`)
+    .join('\n');
+  
+  await ctx.reply(`${t(ctx, 'profileUpdated')}\n\n${formattedParams}`, { parse_mode: 'HTML' });
+});
+
+// Handle edit profile callback
+bot.action('edit_profile', async (ctx) => {
+  await ctx.editMessageText(t(ctx, 'setProfileHelp'));
+  await ctx.answerCbQuery();
 });
 
 // Only start the bot outside of test environment

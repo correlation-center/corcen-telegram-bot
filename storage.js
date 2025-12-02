@@ -18,7 +18,19 @@ class Storage {
     this.db.data ||= { users: {} };
     const id = String(userId);
     if (!this.db.data.users[id]) {
-      this.db.data.users[id] = { needs: [], resources: [] };
+      this.db.data.users[id] = { 
+        needs: [], 
+        resources: [],
+        profile: {
+          customParams: {}
+        }
+      };
+    }
+    // Migration for existing users without profile
+    if (!this.db.data.users[id].profile) {
+      this.db.data.users[id].profile = {
+        customParams: {}
+      };
     }
     return this.db.data.users[id];
   }
