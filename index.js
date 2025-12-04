@@ -46,7 +46,7 @@ async function migrateUserMentions({ limit = Number(process.env.MIGRATE_LIMIT) |
   if (tracing) console.log(`migrateUserMentions: found ${Object.keys(users).length} users in DB`);
   outer: for (const [userId, user] of Object.entries(users)) {
     if (tracing) console.log(`migrateUserMentions: inspecting user ${userId}`);
-    for (const type of ['gets', 'gives']) {
+    for (const type of ['needs', 'resources']) {
       if (tracing) console.log(`migrateUserMentions:  checking type ${type}`);
       const items = user[type] || [];
       for (const item of items) {
@@ -85,7 +85,7 @@ async function migrateUserMentions({ limit = Number(process.env.MIGRATE_LIMIT) |
           console.log(JSON.stringify(item.user, null, 2));
         }
         // Update role field for DB
-        const roleField = type === 'gets' ? 'getter' : 'giver';
+        const roleField = type === 'needs' ? 'requestor' : 'supplier';
         item[roleField] = chat.username || chat.first_name || 'unknown';
         if (tracing) console.log(`migrateUserMentions:      set ${roleField}: ${item[roleField]}`);
         // Detect real changes (excluding updatedAt), stripping undefined fields
@@ -97,12 +97,12 @@ async function migrateUserMentions({ limit = Number(process.env.MIGRATE_LIMIT) |
         }
         // Build new content only when change detected
         let newContent;
-        if (type === 'gets') {
-          if (tracing) console.log('migrateUserMentions:      building get content');
-          newContent = `${item.description}\n\n<i>Get of ${mention}.</i>`;
+        if (type === 'needs') {
+          if (tracing) console.log('migrateUserMentions:      building need content');
+          newContent = `${item.description}\n\n<i>Need of ${mention}.</i>`;
         } else {
-          if (tracing) console.log('migrateUserMentions:      building give content');
-          newContent = `${item.description}\n\n<i>Give provided by ${mention}.</i>`;
+          if (tracing) console.log('migrateUserMentions:      building resource content');
+          newContent = `${item.description}\n\n<i>Resource provided by ${mention}.</i>`;
         }
         // Now perform API call; treat 'message is not modified' as non-error
         try {
@@ -208,7 +208,7 @@ async function migrateDeleteUserChannelMessages({ userId, tracing = false } = {}
     return;
   }
   let deletedCount = 0;
-  for (const type of ['gets', 'gives']) {
+  for (const type of ['needs', 'resources']) {
     const items = user[type] || [];
     const retained = [];
     for (const item of items) {
@@ -265,7 +265,7 @@ const bot = (() => {
 const pendingActions = {}; // Structure: { "userId_chatId": action }
 const CHANNEL_USERNAME = '@CorrelationCenter';
 // Daily posting limits per user
-const DAILY_LIMITS = { get: 3, give: 3 };
+const DAILY_LIMITS = { need: 3, resource: 3 };
 // Delay (ms) before prompting user for description when pending action is set
 const PROMPT_DELAY_MS = Number(process.env.PROMPT_DELAY_MS) || 750;
 // Feature flag to enable repost mode: forward original user message to channel and post metadata separately
@@ -321,38 +321,38 @@ function isBotSystemMessage(msg, botId) {
   return variants.some(variant => msg.text.trim().startsWith(variant.trim()));
 }
 
-// Helper function to check if a message is a prompt message (for get/give description)
-// Returns the type ('get' or 'give') if it's a prompt message, or null otherwise
+// Helper function to check if a message is a prompt message (for need/resource description)
+// Returns the type ('need' or 'resource') if it's a prompt message, or null otherwise
 function getBotPromptMessageType(msg, botId) {
   if (!msg || !msg.from || msg.from.id !== botId) return null;
   if (!msg.text) return null;
 
-  const getPrompts = [];
-  const givePrompts = [];
+  const needPrompts = [];
+  const resourcePrompts = [];
 
   for (const lang of Object.keys(locales)) {
     if (locales[lang].messages) {
-      if (locales[lang].messages.promptGet) {
-        getPrompts.push(locales[lang].messages.promptGet);
+      if (locales[lang].messages.promptNeed) {
+        needPrompts.push(locales[lang].messages.promptNeed);
       }
-      if (locales[lang].messages.promptGive) {
-        givePrompts.push(locales[lang].messages.promptGive);
+      if (locales[lang].messages.promptResource) {
+        resourcePrompts.push(locales[lang].messages.promptResource);
       }
     }
   }
 
   const text = msg.text.trim();
-  if (getPrompts.some(variant => text.startsWith(variant.trim()))) {
-    return 'get';
+  if (needPrompts.some(variant => text.startsWith(variant.trim()))) {
+    return 'need';
   }
-  if (givePrompts.some(variant => text.startsWith(variant.trim()))) {
-    return 'give';
+  if (resourcePrompts.some(variant => text.startsWith(variant.trim()))) {
+    return 'resource';
   }
 
   return null;
 }
 
-// Helper to list items for both gets and gives
+// Helper to list items for both needs and resources
 async function listItems(ctx, type) {
   if (ctx.chat.type !== 'private') return;
   const user = await storage.getUserData(ctx.from.id);
@@ -502,7 +502,7 @@ async function addItem(ctx, type) {
     user[fieldKey],
     (item) => new Date(item.createdAt).getTime() >= sinceTs
   );
-  const limitKey = type === 'get' ? 'limitGetsPerDay' : 'limitGivesPerDay';
+  const limitKey = type === 'need' ? 'limitNeedsPerDay' : 'limitResourcesPerDay';
   const limit = DAILY_LIMITS[type];
   if (recentItems.length >= limit) {
     await ctx.reply(t(ctx, limitKey, { count: recentItems.length, limit }));
@@ -511,17 +511,17 @@ async function addItem(ctx, type) {
     return;
   }
   const config = {
-    get: {
-      field: 'gets',
-      role: 'getter',
+    need: {
+      field: 'needs',
+      role: 'requestor',
       channelTemplate: (description, from) =>
-        `${description}\n\n<i>Get of ${buildUserMention({ user: from })}.</i>`
+        `${description}\n\n<i>Need of ${buildUserMention({ user: from })}.</i>`
     },
-    give: {
-      field: 'gives',
-      role: 'giver',
+    resource: {
+      field: 'resources',
+      role: 'supplier',
       channelTemplate: (description, from) =>
-        `${description}\n\n<i>Give provided by ${buildUserMention({ user: from })}.</i>`
+        `${description}\n\n<i>Resource provided by ${buildUserMention({ user: from })}.</i>`
     }
   };
   const { field, role, channelTemplate } = config[type];
@@ -554,9 +554,9 @@ async function addItem(ctx, type) {
       item.descriptionMessageId = forwarded.message_id;
       // Send metadata only (without description) as a reply to the forwarded message
       const mention = buildUserMention({ user: ctx.from });
-      const metadata = type === 'get'
-        ? `<i>Get of ${mention}.</i>`
-        : `<i>Give provided by ${mention}.</i>`;
+      const metadata = type === 'need'
+        ? `<i>Need of ${mention}.</i>`
+        : `<i>Resource provided by ${mention}.</i>`;
       post = await ctx.telegram.sendMessage(
         CHANNEL_USERNAME,
         metadata,
@@ -583,8 +583,8 @@ async function addItem(ctx, type) {
   await storage.writeDB();
   // Send confirmation: private chat vs group chat
   // Use specialized translation in private chats to mention management commands
-  const privateKey = type === 'get' ? 'getAddedPrivate' : 'giveAddedPrivate';
-  const groupKey = type === 'get' ? 'getAdded' : 'giveAdded';
+  const privateKey = type === 'need' ? 'needAddedPrivate' : 'resourceAddedPrivate';
+  const groupKey = type === 'need' ? 'needAdded' : 'resourceAdded';
   const replyKey = ctx.chat.type === 'private' ? privateKey : groupKey;
   await ctx.reply(t(ctx, replyKey, { channel: CHANNEL_USERNAME }));
   const pendingKey = getPendingActionKey(ctx.from.id, ctx.chat.id);
@@ -594,8 +594,8 @@ async function addItem(ctx, type) {
 function formatDate(ts) {
   return new Date(ts || Date.now()).toLocaleString();
 }
-// Consolidated handlers for prompt, listing, and deletion of gets and gives
-const itemTypes = ['get', 'give'];
+// Consolidated handlers for prompt, listing, and deletion of needs and resources
+const itemTypes = ['need', 'resource'];
 itemTypes.forEach((type) => {
   const capitalized = type.charAt(0).toUpperCase() + type.slice(1);
   const plural = `${type}s`;
@@ -716,7 +716,7 @@ itemTypes.forEach((type) => {
     // Build mention from repaired item.user
     const mention = buildUserMention({ user: item.user });
     const content = `${item.description}\n\n<i>${
-      type === 'get' ? 'Get of ' + mention : 'Give provided by ' + mention
+      type === 'need' ? 'Need of ' + mention : 'Resource provided by ' + mention
     }.</i>`;
     let post;
     if (item.fileId) {
@@ -806,9 +806,9 @@ bot.on('message', async (ctx, next) => {
   if (ctx.message.text && ctx.message.text.startsWith('/')) {
     const command = ctx.message.text.split(' ')[0].toLowerCase();
     if (command === '/get' || command === '/give') {
-      // Handle as if it were a command
-      const type = command === '/get' ? 'get' : 'give';
-      
+      // Handle as if it were a command - map to internal types
+      const type = command === '/get' ? 'need' : 'resource';
+
       // Check if this is a reply to a bot system message
       if (ctx.message.reply_to_message && isBotSystemMessage(ctx.message.reply_to_message, bot.botInfo.id)) {
         // Just switch to the new mode without publishing
@@ -818,12 +818,12 @@ bot.on('message', async (ctx, next) => {
         await ctx.reply(t(ctx, promptKey));
         return;
       }
-      
+
       // For other replies, proceed with normal addItem logic
       if (ctx.message.reply_to_message) {
         return addItem(ctx, type);
       }
-      
+
       // Set pending and schedule prompt after delay
       const pendingKey = getPendingActionKey(ctx.from.id, ctx.chat.id);
       pendingActions[pendingKey] = type;
