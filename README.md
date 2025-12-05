@@ -5,7 +5,23 @@
 
 [t.me/CorrelationCenterBot](https://t.me/CorrelationCenterBot) Telegram bot.
 
+## Philosophy
+
+**Everything is a need. A need to give. A need to get.**
+
 The Correlation Center is a system inspired by Jacque Fresco ideas. It ensures that all needs are satisfied using available resources. In short, it's a system to manage needs and resources.
+
+When you have something to offer, you have a need to give. When you need something, you have a need to get. This unified perspective helps us see that both giving and receiving are fundamental human needs.
+
+## Usage
+
+Start a conversation with [@CorrelationCenterBot](https://t.me/CorrelationCenterBot) and use these commands:
+
+- `/get` - Add a need (something you need to get)
+- `/give` - Add a resource (something you need to give)
+- `/needs` - List your needs
+- `/resources` - List your resources
+- `/help` - Show help message
 ## Setup
 
 Create a `.env` file with your Telegram bot token:
