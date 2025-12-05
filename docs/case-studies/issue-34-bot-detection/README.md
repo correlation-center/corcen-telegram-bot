@@ -242,7 +242,8 @@ Summary:
 
 **New Files:**
 1. `experiments/test-bot-detection.js` - Test script demonstrating the bug
-2. `docs/case-studies/issue-34-bot-detection-bug.md` - This document
+2. `docs/case-studies/issue-34-bot-detection/README.md` - This document
+3. `docs/case-studies/issue-34-bot-detection/screenshot.png` - Original issue screenshot
 
 ### Testing Checklist
 
