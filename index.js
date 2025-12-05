@@ -270,6 +270,8 @@ const DAILY_LIMITS = { need: 3, resource: 3 };
 const PROMPT_DELAY_MS = Number(process.env.PROMPT_DELAY_MS) || 750;
 // Feature flag to enable repost mode: forward original user message to channel and post metadata separately
 const ENABLE_REPOSTS = process.env.ENABLE_REPOSTS === 'true';
+// Verbose logging mode for debugging
+const VERBOSE = process.env.VERBOSE === 'true' || process.argv.includes('--verbose');
 
 // Helper function to generate pending action key
 function getPendingActionKey(userId, chatId) {
@@ -279,17 +281,36 @@ function getPendingActionKey(userId, chatId) {
 // Helper function to check if this is the only bot in the chat
 async function isOnlyBotInChat(ctx) {
   if (ctx.chat.type === 'private') {
+    if (VERBOSE) console.log('[isOnlyBotInChat] Private chat, returning true');
     return true; // Always true for private chats
   }
 
   try {
     const administrators = await ctx.telegram.getChatAdministrators(ctx.chat.id);
+    if (VERBOSE) {
+      console.log('[isOnlyBotInChat] Chat:', ctx.chat.id, ctx.chat.title || ctx.chat.username);
+      console.log('[isOnlyBotInChat] Bot ID:', bot.botInfo.id);
+      console.log('[isOnlyBotInChat] User ID:', ctx.from.id);
+      console.log('[isOnlyBotInChat] Administrators:', administrators.map(a => ({
+        id: a.user.id,
+        username: a.user.username,
+        is_bot: a.user.is_bot
+      })));
+    }
     const otherBots = administrators.filter(admin =>
-      admin.user.is_bot && admin.user.id !== ctx.from.id
+      admin.user.is_bot && admin.user.id !== bot.botInfo.id
     );
+    if (VERBOSE) {
+      console.log('[isOnlyBotInChat] Other bots:', otherBots.map(a => ({
+        id: a.user.id,
+        username: a.user.username
+      })));
+      console.log('[isOnlyBotInChat] Is only bot:', otherBots.length === 0);
+    }
     return otherBots.length === 0;
   } catch (error) {
     console.log(`Could not check administrators for chat ${ctx.chat.id}:`, error.message);
+    if (VERBOSE) console.log('[isOnlyBotInChat] Error, returning false:', error);
     return false; // Assume there are other bots if we can't check
   }
 }
