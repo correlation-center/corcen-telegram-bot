@@ -9,9 +9,25 @@
 
 **Everything is a need. A need to give. A need to get.**
 
-The Correlation Center is a system inspired by Jacque Fresco ideas. It ensures that all needs are satisfied using available resources. In short, it's a system to manage needs and resources.
+The Correlation Center is a system inspired by Jacque Fresco's resource-based economy ideas. It ensures that all needs are satisfied using available resources.
 
-When you have something to offer, you have a need to give. When you need something, you have a need to get. This unified perspective helps us see that both giving and receiving are fundamental human needs.
+Our philosophy is inspired by the communist principle:
+> "From each according to his ability, to each according to his needs."
+
+But in a world where everything is recognized as a need, this transforms into:
+> **"For each according to his needs."**
+> _Russian: Каждому по потребностям._
+
+When you have something to offer, you have a **need to give**. When you need something, you have a **need to get**. This unified perspective helps us see that both giving and receiving are fundamental human needs.
+
+### Alternative Perspective: Everything is a Resource
+
+The same philosophy can be expressed from the resource perspective:
+
+- A **need to get** is a **resource request**
+- A **need to give** is a **resource offer**
+
+Both perspectives describe the same reality: a system that connects what people want to share with what people want to receive.
 
 ## Usage
 
