@@ -278,6 +278,24 @@ function getPendingActionKey(userId, chatId) {
   return `${userId}_${chatId}`;
 }
 
+// Helper function to check if a message is forwarded
+// Returns true if the message was forwarded from another chat/user
+function isForwardedMessage(message) {
+  if (!message) return false;
+
+  // Check new API field (Bot API 7.0+)
+  if (message.forward_origin) {
+    return true;
+  }
+
+  // Check old API fields (for backwards compatibility)
+  if (message.forward_from || message.forward_from_chat || message.forward_date) {
+    return true;
+  }
+
+  return false;
+}
+
 // Helper function to check if this is the only bot in the chat
 async function isOnlyBotInChat(ctx) {
   if (ctx.chat.type === 'private') {
@@ -627,6 +645,11 @@ itemTypes.forEach((type) => {
 
   // Prompt handlers (/need and keyboard)
   bot.command(type, async (ctx) => {
+    // Ignore commands in forwarded messages
+    if (isForwardedMessage(ctx.message)) {
+      return;
+    }
+
     // Disallow anonymous (chat/channel) accounts from creating items
     if (ctx.message.sender_chat) {
       await ctx.reply(t(ctx, 'anonymousNotAllowed'));
@@ -677,6 +700,11 @@ itemTypes.forEach((type) => {
 
   // Listing handlers using the generic helper
   bot.command(plural, async (ctx) => {
+    // Ignore commands in forwarded messages
+    if (isForwardedMessage(ctx.message)) {
+      return;
+    }
+
     await listItems(ctx, type);
   });
   bot.hears([
@@ -786,6 +814,11 @@ function getMainKeyboard(ctx) {
 }
 
 bot.start(async (ctx) => {
+  // Ignore commands in forwarded messages
+  if (isForwardedMessage(ctx.message)) {
+    return;
+  }
+
   // In group chats, only allow /start if this is the only bot OR if bot was explicitly mentioned
   if (ctx.chat.type !== 'private') {
     // Check if the bot was explicitly mentioned in the command
@@ -828,6 +861,11 @@ bot.on('message', async (ctx, next) => {
     const command = ctx.message.text.split(' ')[0].toLowerCase();
     // Support both preferred (/get, /give) and legacy (/need, /resource) commands
     if (command === '/get' || command === '/give' || command === '/need' || command === '/resource') {
+      // Ignore commands in forwarded messages
+      if (isForwardedMessage(ctx.message)) {
+        return;
+      }
+
       // Handle as if it were a command - map to internal types
       const type = (command === '/get' || command === '/need') ? 'need' : 'resource';
 
@@ -907,6 +945,11 @@ bot.on('message', async (ctx, next) => {
 
 // Help command: private vs group
 bot.command('help', async (ctx) => {
+  // Ignore commands in forwarded messages
+  if (isForwardedMessage(ctx.message)) {
+    return;
+  }
+
   if (ctx.chat.type === 'private') {
     await ctx.reply(t(ctx, 'help'));
   } else {
@@ -925,6 +968,11 @@ bot.command('help', async (ctx) => {
 
 // Cancel any pending action
 bot.command('cancel', async (ctx) => {
+  // Ignore commands in forwarded messages
+  if (isForwardedMessage(ctx.message)) {
+    return;
+  }
+
   const pendingKey = getPendingActionKey(ctx.from.id, ctx.chat.id);
   if (pendingActions[pendingKey]) {
     delete pendingActions[pendingKey];
