@@ -1,11 +1,11 @@
 {
   "messages": {
     "welcome": "Welcome to Correlation Center Bot!\n\n{{description}}\n\nType /help to see all commands.\n\nUse the keyboard below for quick access.",
-    "description": "Everything is a need. A need to give. A need to get.\n\nThe Correlation Center is a system inspired by Jacque Fresco ideas. It ensures that all needs are satisfied using available resources.",
+    "description": "Everything is a need. A need to give. A need to get.\n\nFor each according to his needs.\n\nThe Correlation Center is a system inspired by Jacque Fresco ideas. It ensures that all needs are satisfied using available resources.",
     "help": "Everything is a need. A need to give. A need to get.\n\nAvailable commands:\n/start - Start the bot\n/help - Show this help message\n/get - Add a need (need to get)\n/needs - List your needs\n/give - Add a resource (need to give)\n/resources - List your resources\n/cancel - Cancel current pending action",
     "helpGroup": "Everything is a need. A need to give. A need to get.\n\nAvailable commands:\n/start - Start the bot\n/help - Show this help message\n/get - Add a need (need to get)\n/give - Add a resource (need to give)\n/cancel - Cancel current pending action",
-    "promptNeed": "Please send the description of your need as your next message.",
-    "promptResource": "Please send the description of your resource as your next message.",
+    "promptNeed": "Please send the description of your need to receive as your next message.",
+    "promptResource": "Please send the description of your resource (a need to give) as your next message.",
     "needAdded": "Your need was published at {{channel}}. You can manage your needs in private messages of @CorrelationCenterBot.",
     "resourceAdded": "Your resource was published at {{channel}}. You can manage your resources in private messages of @CorrelationCenterBot.",
     "needAddedPrivate": "Your need was published at {{channel}}. Use the \"My needs\" button or /needs to view and manage your needs.",
