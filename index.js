@@ -284,26 +284,65 @@ const DAILY_LIMITS = { need: 3, resource: 3 };
 const PROMPT_DELAY_MS = Number(process.env.PROMPT_DELAY_MS) || 750;
 // Feature flag to enable repost mode: forward original user message to channel and post metadata separately
 const ENABLE_REPOSTS = process.env.ENABLE_REPOSTS === 'true';
+// Verbose logging mode for debugging
+const VERBOSE = process.env.VERBOSE === 'true' || process.argv.includes('--verbose');
 
 // Helper function to generate pending action key
 function getPendingActionKey(userId, chatId) {
   return `${userId}_${chatId}`;
 }
 
+// Helper function to check if a message is forwarded
+// Returns true if the message was forwarded from another chat/user
+function isForwardedMessage(message) {
+  if (!message) return false;
+
+  // Check new API field (Bot API 7.0+)
+  if (message.forward_origin) {
+    return true;
+  }
+
+  // Check old API fields (for backwards compatibility)
+  if (message.forward_from || message.forward_from_chat || message.forward_date) {
+    return true;
+  }
+
+  return false;
+}
+
 // Helper function to check if this is the only bot in the chat
 async function isOnlyBotInChat(ctx) {
   if (ctx.chat.type === 'private') {
+    if (VERBOSE) console.log('[isOnlyBotInChat] Private chat, returning true');
     return true; // Always true for private chats
   }
 
   try {
     const administrators = await ctx.telegram.getChatAdministrators(ctx.chat.id);
+    if (VERBOSE) {
+      console.log('[isOnlyBotInChat] Chat:', ctx.chat.id, ctx.chat.title || ctx.chat.username);
+      console.log('[isOnlyBotInChat] Bot ID:', bot.botInfo.id);
+      console.log('[isOnlyBotInChat] User ID:', ctx.from.id);
+      console.log('[isOnlyBotInChat] Administrators:', administrators.map(a => ({
+        id: a.user.id,
+        username: a.user.username,
+        is_bot: a.user.is_bot
+      })));
+    }
     const otherBots = administrators.filter(admin =>
-      admin.user.is_bot && admin.user.id !== ctx.from.id
+      admin.user.is_bot && admin.user.id !== bot.botInfo.id
     );
+    if (VERBOSE) {
+      console.log('[isOnlyBotInChat] Other bots:', otherBots.map(a => ({
+        id: a.user.id,
+        username: a.user.username
+      })));
+      console.log('[isOnlyBotInChat] Is only bot:', otherBots.length === 0);
+    }
     return otherBots.length === 0;
   } catch (error) {
     console.log(`Could not check administrators for chat ${ctx.chat.id}:`, error.message);
+    if (VERBOSE) console.log('[isOnlyBotInChat] Error, returning false:', error);
     return false; // Assume there are other bots if we can't check
   }
 }
@@ -620,6 +659,11 @@ itemTypes.forEach((type) => {
 
   // Prompt handlers (/need and keyboard)
   bot.command(type, async (ctx) => {
+    // Ignore commands in forwarded messages
+    if (isForwardedMessage(ctx.message)) {
+      return;
+    }
+
     // Disallow anonymous (chat/channel) accounts from creating items
     if (ctx.message.sender_chat) {
       await ctx.reply(t(ctx, 'anonymousNotAllowed'));
@@ -670,6 +714,11 @@ itemTypes.forEach((type) => {
 
   // Listing handlers using the generic helper
   bot.command(plural, async (ctx) => {
+    // Ignore commands in forwarded messages
+    if (isForwardedMessage(ctx.message)) {
+      return;
+    }
+
     await listItems(ctx, type);
   });
   bot.hears([
@@ -779,6 +828,11 @@ function getMainKeyboard(ctx) {
 }
 
 bot.start(async (ctx) => {
+  // Ignore commands in forwarded messages
+  if (isForwardedMessage(ctx.message)) {
+    return;
+  }
+
   // In group chats, only allow /start if this is the only bot OR if bot was explicitly mentioned
   if (ctx.chat.type !== 'private') {
     // Check if the bot was explicitly mentioned in the command
@@ -819,10 +873,16 @@ bot.on('message', async (ctx, next) => {
   // Check if this is a command-like text (clicked from help message)
   if (ctx.message.text && ctx.message.text.startsWith('/')) {
     const command = ctx.message.text.split(' ')[0].toLowerCase();
-    if (command === '/need' || command === '/resource') {
-      // Handle as if it were a command
-      const type = command === '/need' ? 'need' : 'resource';
-      
+    // Support both preferred (/get, /give) and legacy (/need, /resource) commands
+    if (command === '/get' || command === '/give' || command === '/need' || command === '/resource') {
+      // Ignore commands in forwarded messages
+      if (isForwardedMessage(ctx.message)) {
+        return;
+      }
+
+      // Handle as if it were a command - map to internal types
+      const type = (command === '/get' || command === '/need') ? 'need' : 'resource';
+
       // Check if this is a reply to a bot system message
       if (ctx.message.reply_to_message && isBotSystemMessage(ctx.message.reply_to_message, bot.botInfo.id)) {
         // Just switch to the new mode without publishing
@@ -832,12 +892,12 @@ bot.on('message', async (ctx, next) => {
         await ctx.reply(t(ctx, promptKey));
         return;
       }
-      
+
       // For other replies, proceed with normal addItem logic
       if (ctx.message.reply_to_message) {
         return addItem(ctx, type);
       }
-      
+
       // Set pending and schedule prompt after delay
       const pendingKey = getPendingActionKey(ctx.from.id, ctx.chat.id);
       pendingActions[pendingKey] = type;
@@ -899,6 +959,11 @@ bot.on('message', async (ctx, next) => {
 
 // Help command: private vs group
 bot.command('help', async (ctx) => {
+  // Ignore commands in forwarded messages
+  if (isForwardedMessage(ctx.message)) {
+    return;
+  }
+
   if (ctx.chat.type === 'private') {
     await ctx.reply(t(ctx, 'help'));
   } else {
@@ -917,6 +982,11 @@ bot.command('help', async (ctx) => {
 
 // Cancel any pending action
 bot.command('cancel', async (ctx) => {
+  // Ignore commands in forwarded messages
+  if (isForwardedMessage(ctx.message)) {
+    return;
+  }
+
   const pendingKey = getPendingActionKey(ctx.from.id, ctx.chat.id);
   if (pendingActions[pendingKey]) {
     delete pendingActions[pendingKey];

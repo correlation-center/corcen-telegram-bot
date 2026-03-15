@@ -5,43 +5,78 @@
 
 [t.me/CorrelationCenterBot](https://t.me/CorrelationCenterBot) Telegram bot.
 
-The Correlation Center is a system inspired by Jacque Fresco ideas. It ensures that all needs are satisfied using available resources. In short, it's a system to manage needs and resources.
+## Philosophy
+
+**Everything is a need. A need to give. A need to get.**
+
+The Correlation Center is a system inspired by Jacque Fresco's resource-based economy ideas. It ensures that all needs are satisfied using available resources.
+
+Our philosophy is inspired by the communist principle:
+> "From each according to his ability, to each according to his needs."
+
+But in a world where everything is recognized as a need, this transforms into:
+> **"For each according to his needs."**
+> _Russian: Каждому по потребностям._
+
+When you have something to offer, you have a **need to give**. When you need something, you have a **need to get**. This unified perspective helps us see that both giving and receiving are fundamental human needs.
+
+### Alternative Perspective: Everything is a Resource
+
+The same philosophy can be expressed from the resource perspective:
+
+- A **need to get** is a **resource request**
+- A **need to give** is a **resource offer**
+
+Both perspectives describe the same reality: a system that connects what people want to share with what people want to receive.
+
+## Usage
+
+Start a conversation with [@CorrelationCenterBot](https://t.me/CorrelationCenterBot) and use these commands:
+
+- `/get` - Add a need (something you need to get)
+- `/give` - Add a resource (something you need to give)
+- `/needs` - List your needs
+- `/resources` - List your resources
+- `/help` - Show help message
 
 ## Public Log Architecture
 
-This bot implements a transparent, auditable database using **LiNo (Links Notation)** format for public logging. All database changes are recorded to a public Telegram channel, creating an immutable history that can be used to reconstruct the current state.
-
-### Key Features
-
-- **Public Transparency**: All database changes are logged to a public Telegram channel in LiNo format
-- **UUIDv7 Transaction IDs**: Each change has a unique, time-sortable identifier
-- **Asynchronous Transactions**: Changes are saved locally first, then logged publicly
-- **Change Detection**: Automatic tracking of creates, updates, and deletes
-- **Batch Operations**: Multiple changes can be logged in a single transaction
-- **Local Cache**: Fast local database (lowdb) synchronized with public log
+This bot implements a transparent, auditable database using **LiNo (Links Notation)** format for public logging. All database changes are recorded to a public Telegram channel as link substitution operations, creating an immutable history that can be used to reconstruct the current state.
 
 ### Architecture Overview
 
-1. **Public Log** (Telegram Channel): Stores all changes in LiNo format - the source of truth
-2. **Local Database** (lowdb): Fast cache of current state, derived from public log
-3. **link-cli**: Tool to calculate current state from public log history (future integration)
+1. **Public Log** (Telegram Channel) - Backbone of all operations, stores all changes as link substitution operations in LiNo format
+2. **Local Links Notation** - Text-based local mirror of transactions in links notation format
+3. **link-cli** - Local database instance for fast indexed access (computable from the log)
+
+### How It Works
+
+1. User makes a change (create/update/delete a need or resource)
+2. Change is first written to the **Public Log** channel as a link substitution operation
+3. Once confirmed in the public log, the change is mirrored to local storage
+4. Only after confirmation are public-facing operations performed (e.g., publishing to the channel)
+
+### Link Substitution Operations
+
+Changes use the link-cli single substitution format:
+
+- **Creation**: `(() (...))` - replace nothing with a new link
+- **Update**: `((...) (...))` - replace old link with new link
+- **Deletion**: `((...) ())` - replace link with nothing
 
 ### LiNo Format Example
 
 ```
-Transaction: 0199d636-512d-755d-bb81-b4f6f02f9aac
-2025-10-12T02:18:28.014Z
-
-(change:
-  operation: create
-  entity: need
-  userId: 123456
-  data:
-    guid: "0199d636-5136-73bd-9a95-51f3c702d6ce"
-    description: "Looking for a bicycle in good condition"
-    channelMessageId: 42
-    createdAt: "2025-10-12T02:18:28.022Z"
-)
+(transaction
+  0199d636-512d-755d-bb81-b4f6f02f9aac
+  2025-10-12T02:18:28.014Z
+  (()
+    (need
+      0199d636-5136-73bd-9a95-51f3c702d6ce
+      123456
+      "Looking for a bicycle in good condition"
+      42
+      2025-10-12T02:18:28.022Z)))
 ```
 
 ## Setup
