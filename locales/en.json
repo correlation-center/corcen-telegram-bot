@@ -6,8 +6,8 @@
     "helpGroup": "Everything is a need. A need to give. A need to get.\n\nAvailable commands:\n/start - Start the bot\n/help - Show this help message\n/get - Add a need (need to get)\n/give - Add a resource (need to give)\n/cancel - Cancel current pending action",
     "promptNeed": "Please send the description of your need to receive as your next message.",
     "promptResource": "Please send the description of your resource (a need to give) as your next message.",
-    "needAdded": "Your need was published at {{channel}}. You can manage your needs in private messages of @CorrelationCenterBot.",
-    "resourceAdded": "Your resource was published at {{channel}}. You can manage your resources in private messages of @CorrelationCenterBot.",
+    "needAdded": "Your need was published at {{channel}}. You can manage your needs in private messages of @{{botUsername}}.",
+    "resourceAdded": "Your resource was published at {{channel}}. You can manage your resources in private messages of @{{botUsername}}.",
     "needAddedPrivate": "Your need was published at {{channel}}. Use the \"My needs\" button or /needs to view and manage your needs.",
     "resourceAddedPrivate": "Your resource was published at {{channel}}. Use the \"My resources\" button or /resources to view and manage your resources."
   },
