@@ -1,4 +1,3 @@
-import 'dotenv/config';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
 import path from 'path';
@@ -7,6 +6,7 @@ import StorageWithLog from './storageWithLog.js';
 import { v7 as uuidv7 } from 'uuid';
 import { buildUserMention } from './buildUserMention.js';
 import _ from 'lodash';
+import config from './config.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -51,7 +51,7 @@ const bot = (() => {
   });
 
   try {
-    return new Telegraf(process.env.BOT_TOKEN);
+    return new Telegraf(config.botToken);
   } catch (error) {
     console.error('Failed to initialize Telegram bot:', error.message);
     process.exit(1);
@@ -59,12 +59,11 @@ const bot = (() => {
 })();
 
 // Initialize database with public logging (if PUBLIC_LOG_CHANNEL is set)
-const PUBLIC_LOG_CHANNEL = process.env.PUBLIC_LOG_CHANNEL;
-const storage = PUBLIC_LOG_CHANNEL
+const storage = config.publicLogChannel
   ? new StorageWithLog({
       telegram: bot.telegram,
-      logChannel: PUBLIC_LOG_CHANNEL,
-      tracing: process.env.PUBLIC_LOG_TRACING === 'true'
+      logChannel: config.publicLogChannel,
+      tracing: config.publicLogTracing
     })
   : new StorageWithLog({
       telegram: bot.telegram,
@@ -79,7 +78,7 @@ await storage.initDB();
  * @param {number} [options.limit=Number(process.env.MIGRATE_LIMIT)||1] - Max items to migrate per run.
  * @param {boolean} [options.tracing=false] - Enable detailed tracing logs.
  */
-async function migrateUserMentions({ limit = Number(process.env.MIGRATE_LIMIT) || 1, tracing = false } = {}) {
+async function migrateUserMentions({ limit = config.migrateLimit, tracing = false } = {}) {
   if (tracing) console.log(`migrateUserMentions: starting migration with limit=${limit}`);
   let migratedCount = 0;
   if (tracing) console.log('migrateUserMentions: reading database');
@@ -277,15 +276,16 @@ async function migrateDeleteUserChannelMessages({ userId, tracing = false } = {}
 
 // Bot is already initialized above (before storage initialization)
 const pendingActions = {}; // Structure: { "userId_chatId": action }
-const CHANNEL_USERNAME = '@CorrelationCenter';
+const CHANNEL_USERNAME = config.channelUsername;
+const BOT_USERNAME = config.botUsername;
 // Daily posting limits per user
-const DAILY_LIMITS = { need: 3, resource: 3 };
+const DAILY_LIMITS = { need: config.dailyLimitNeeds, resource: config.dailyLimitResources };
 // Delay (ms) before prompting user for description when pending action is set
-const PROMPT_DELAY_MS = Number(process.env.PROMPT_DELAY_MS) || 750;
+const PROMPT_DELAY_MS = config.promptDelayMs;
 // Feature flag to enable repost mode: forward original user message to channel and post metadata separately
-const ENABLE_REPOSTS = process.env.ENABLE_REPOSTS === 'true';
+const ENABLE_REPOSTS = config.enableReposts;
 // Verbose logging mode for debugging
-const VERBOSE = process.env.VERBOSE === 'true' || process.argv.includes('--verbose');
+const VERBOSE = config.verbose;
 
 // Helper function to generate pending action key
 function getPendingActionKey(userId, chatId) {
@@ -357,8 +357,8 @@ function getAllBotMessageVariants() {
         variants.add(message);
         // Always add a variant with both replacements
         const withMentions = message
-          .replace(/\/start/g, '/start@CorrelationCenterBot')
-          .replace(/\/help/g, '/help@CorrelationCenterBot');
+          .replace(/\/start/g, `/start@${BOT_USERNAME}`)
+          .replace(/\/help/g, `/help@${BOT_USERNAME}`);
         if (withMentions !== message) variants.add(withMentions);
       }
     }
@@ -639,7 +639,7 @@ async function addItem(ctx, type) {
   const privateKey = type === 'need' ? 'needAddedPrivate' : 'resourceAddedPrivate';
   const groupKey = type === 'need' ? 'needAdded' : 'resourceAdded';
   const replyKey = ctx.chat.type === 'private' ? privateKey : groupKey;
-  await ctx.reply(t(ctx, replyKey, { channel: CHANNEL_USERNAME }));
+  await ctx.reply(t(ctx, replyKey, { channel: CHANNEL_USERNAME, botUsername: BOT_USERNAME }));
   const pendingKey = getPendingActionKey(ctx.from.id, ctx.chat.id);
   delete pendingActions[pendingKey];
 }
@@ -858,7 +858,7 @@ bot.start(async (ctx) => {
     const isOnlyBot = await isOnlyBotInChat(ctx);
     if (!isOnlyBot) {
       // Replace /help with explicit bot mention in welcome message
-      welcomeText = welcomeText.replace('/help', '/help@CorrelationCenterBot');
+      welcomeText = welcomeText.replace('/help', `/help@${BOT_USERNAME}`);
     }
   }
   
@@ -973,8 +973,8 @@ bot.command('help', async (ctx) => {
     } else {
       // Show help with explicit bot mention
       const helpText = t(ctx, 'helpGroup')
-        .replace('/start', '/start@CorrelationCenterBot')
-        .replace('/help', '/help@CorrelationCenterBot');
+        .replace('/start', `/start@${BOT_USERNAME}`)
+        .replace('/help', `/help@${BOT_USERNAME}`);
       await ctx.reply(helpText);
     }
   }

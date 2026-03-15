@@ -1,0 +1,51 @@
+# Copy this file to .lenv and fill in your actual values:
+#   cp .lenv.example .lenv
+
+# Required: Telegram bot token (get from @BotFather)
+BOT_TOKEN: your-telegram-bot-token
+
+# Optional: Telegram channel username for publishing needs and resources (default: @CorrelationCenter)
+CHANNEL_USERNAME: @CorrelationCenter
+
+# Optional: Bot username for mentions in messages, without @ (default: CorrelationCenterBot)
+BOT_USERNAME: CorrelationCenterBot
+
+# Optional: Public log channel for transparent database change history (LiNo format)
+# This channel stores all database changes for public transparency and auditability
+# Leave empty to disable public logging
+PUBLIC_LOG_CHANNEL:
+
+# Optional: Enable detailed logging traces (default: false)
+PUBLIC_LOG_TRACING: false
+
+# Optional: Enable repost mode to forward user message and post metadata separately (default: false)
+ENABLE_REPOSTS: false
+
+# Optional: Enable verbose logging mode for debugging (default: false)
+VERBOSE: false
+
+# Optional: Delay (ms) before prompting user for description (default: 750)
+PROMPT_DELAY_MS: 750
+
+# Optional: Maximum needs per user per 24 hours (default: 3)
+DAILY_LIMIT_NEEDS: 3
+
+# Optional: Maximum resources per user per 24 hours (default: 3)
+DAILY_LIMIT_RESOURCES: 3
+
+# ---------------------------------------------------------------------------
+# The following variables are only needed if you use sync_to_server.sh
+# to deploy .lenv and db.json to a remote server via rsync over SSH.
+# They are NOT required to run the bot itself.
+# ---------------------------------------------------------------------------
+
+# RSYNC_USER: your_username
+# RSYNC_HOST: your.server.com
+# RSYNC_PORT: 22
+# RSYNC_DEST: /path/to/remote/directory
+
+# Optional: path to SSH private key (uncomment if needed)
+# SSH_KEY_PATH: /path/to/your/private/key
+
+# Optional: password for rsync daemon (uncomment if using daemon mode)
+# RSYNC_PASSWORD: your_rsync_password

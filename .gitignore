@@ -79,6 +79,9 @@ web_modules/
 .env.production.local
 .env.local
 
+# lino-env environment variable files
+.lenv
+
 # parcel-bundler cache (https://parceljs.org/)
 .cache
 .parcel-cache

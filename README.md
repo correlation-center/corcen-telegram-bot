@@ -110,17 +110,33 @@ bun install
 Copy the example environment file and fill in your values:
 
 ```bash
-cp .env.example .env
+cp .lenv.example .lenv
 ```
 
-Edit `.env` with your Telegram bot token (required) and optional settings:
+Edit `.lenv` with your Telegram bot token (required) and optional settings:
 
 ```
-BOT_TOKEN=your-telegram-bot-token
-PUBLIC_LOG_CHANNEL=@YourPublicLogChannel  # Optional: Telegram channel for public logging (leave empty to disable)
-PUBLIC_LOG_TRACING=true                    # Optional: enable detailed logging traces
-ENABLE_REPOSTS=true                        # Optional: enable repost mode to forward user message and post metadata separately
+BOT_TOKEN: your-telegram-bot-token
+CHANNEL_USERNAME: @CorrelationCenter
+BOT_USERNAME: CorrelationCenterBot
+PUBLIC_LOG_CHANNEL: @YourPublicLogChannel
+PUBLIC_LOG_TRACING: true
+ENABLE_REPOSTS: true
 ```
+
+All settings can also be passed as CLI arguments:
+
+```bash
+bun run start -- --bot-token YOUR_TOKEN --channel-username @MyChannel --verbose
+```
+
+Or via a custom configuration file:
+
+```bash
+bun run start -- --configuration production.lenv
+```
+
+See `.lenv.example` for the full list of available options.
 
 ### 4. Start the bot
 
