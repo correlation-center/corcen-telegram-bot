@@ -92,12 +92,22 @@ class StorageWithLog {
 
   /**
    * Append a transaction record to the local links notation log file.
+   * Uses the same indented format as the public log (Telegram) so the
+   * local file and public log are consistent and human-readable.
    * @param {Object} transaction
    */
   appendTransactionLog(transaction) {
     try {
-      const logLine = `${transaction.txId} ${transaction.timestamp} confirmed=${transaction.confirmed}\n`;
-      fs.appendFileSync(this.transactionLogPath, logLine);
+      const logEntry = this.publicLog.buildTransactionString({
+        txId: transaction.txId,
+        timestamp: transaction.timestamp,
+        substitutions: transaction.change
+          ? [this.publicLog.buildSubstitutionString(transaction.change)]
+          : transaction.changes
+            ? transaction.changes.map(c => this.publicLog.buildSubstitutionString(c))
+            : [`(confirmed ${transaction.confirmed})`],
+      });
+      fs.appendFileSync(this.transactionLogPath, logEntry + '\n');
       if (this.tracing) {
         console.log('StorageWithLog: appended transaction to local log', transaction.txId);
       }

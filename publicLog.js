@@ -1,16 +1,21 @@
-import { Link } from '@linksplatform/protocols-lino';
+import { jsonToLino, formatIndented, parseIndented } from 'lino-objects-codec';
 import { v7 as uuidv7 } from 'uuid';
 
 /**
  * PublicLog manages a public audit log of all database changes.
  * Changes are posted to a Telegram channel in LiNo (Links Notation) format
  * using link substitution operations:
- *   - Creation: (() (...)) - replace nothing with a new link
- *   - Update: ((...) (...)) - replace old link with new link
- *   - Deletion: ((...) ()) - replace link with nothing
+ *   - Creation: (() (entity ((field value) ...))) - replace nothing with a new link
+ *   - Update: ((entity (...)) (entity (...))) - replace old link with new link
+ *   - Deletion: ((entity (...)) ()) - replace link with nothing
  *
- * This creates a transparent, immutable history that can be used to reconstruct
- * the current database state using link-cli.
+ * The transaction format uses lino-objects-codec's indented format so each
+ * field has its name alongside its value, making transactions human-readable.
+ *
+ * Example transaction (in local file and Telegram):
+ *   019cf18c-351d-71ea-988b-e1ed13d52402
+ *     timestamp "2026-03-15T12:50:23.645Z"
+ *     change "(() (need ((guid 019cf18c-...) (userId 123456) (description 'Looking for a bicycle'))))"
  */
 class PublicLog {
   constructor({ telegram, logChannel, tracing = false }) {
@@ -39,14 +44,12 @@ class PublicLog {
       return { txId, messageId: null, timestamp, change, confirmed: true };
     }
 
-    const subString = this.buildSubstitutionString(change);
-    const messageText = this.buildTransactionString({
-      txId, timestamp, substitutionStrings: [subString]
-    });
+    const substitution = this.buildSubstitutionString(change);
+    const messageText = this.buildTransactionString({ txId, timestamp, substitutions: [substitution] });
 
     if (this.tracing) {
       console.log('PublicLog: logging change', JSON.stringify({ txId, change }, null, 2));
-      console.log('PublicLog: LiNo message:', messageText);
+      console.log('PublicLog: LiNo message:\n', messageText);
     }
 
     try {
@@ -83,36 +86,30 @@ class PublicLog {
   }
 
   /**
-   * Build a link representing the entity data.
-   * Structure: (entity guid userId description channelMessageId timestamp)
-   * @param {string} entity - Entity type
-   * @param {Object} data - Entity data
-   * @returns {Link}
+   * Build a LiNo representation of entity data using jsonToLino for named fields.
+   * Each field appears as (fieldName value) so every value has its field name.
+   * Example: ((guid 019cf...) (userId 123456) (description 'A bicycle') ...)
+   * @param {Object} data - Entity data (fields with undefined/null values are omitted)
+   * @returns {string} LiNo named-field string
    */
-  buildEntityLink(entity, data) {
-    const values = [new Link(entity)];
-
-    if (data.guid) values.push(new Link(String(data.guid)));
-    if (data.userId) values.push(new Link(String(data.userId)));
-    if (data.description !== undefined) values.push(new Link(String(data.description)));
-    if (data.channelMessageId !== undefined && data.channelMessageId !== null) {
-      values.push(new Link(String(data.channelMessageId)));
+  buildEntityDataLino(data) {
+    const filtered = {};
+    for (const [key, value] of Object.entries(data)) {
+      if (value !== undefined && value !== null) {
+        filtered[key] = String(value);
+      }
     }
-    if (data.createdAt) values.push(new Link(String(data.createdAt)));
-    if (data.updatedAt) values.push(new Link(String(data.updatedAt)));
-
-    return new Link(null, values);
+    return jsonToLino({ json: filtered });
   }
 
   /**
    * Build a link substitution string for a change.
    * Uses the link-cli single substitution format:
-   * - Creation: (() (entity ...))
-   * - Update: ((entity ...old) (entity ...new))
-   * - Deletion: ((entity ...old) ())
+   * - Creation: (() (entity ((field value) ...)))
+   * - Update: ((entity (...old)) (entity (...new)))
+   * - Deletion: ((entity (...old)) ())
    *
-   * Note: We build the string manually because the LiNo Link API
-   * drops empty links () when used as values in formatValue().
+   * Entity data uses named fields via jsonToLino so each value is labelled.
    * @param {Object} change
    * @returns {string} LiNo substitution string
    */
@@ -120,33 +117,57 @@ class PublicLog {
     const { operation, entity, data, previousData } = change;
 
     if (operation === 'create') {
-      const newLink = this.buildEntityLink(entity, data);
-      return `(() ${newLink.toString()})`;
+      const newDataLino = this.buildEntityDataLino(data);
+      return `(() (${entity} ${newDataLino}))`;
     }
 
     if (operation === 'update') {
-      const oldLink = this.buildEntityLink(entity, previousData);
-      const newLink = this.buildEntityLink(entity, data);
-      return `(${oldLink.toString()} ${newLink.toString()})`;
+      const oldDataLino = this.buildEntityDataLino(previousData);
+      const newDataLino = this.buildEntityDataLino(data);
+      return `((${entity} ${oldDataLino}) (${entity} ${newDataLino}))`;
     }
 
     if (operation === 'delete') {
-      const oldLink = this.buildEntityLink(entity, previousData);
-      return `(${oldLink.toString()} ())`;
+      const oldDataLino = this.buildEntityDataLino(previousData);
+      return `((${entity} ${oldDataLino}) ())`;
     }
 
     throw new Error(`Unknown operation: ${operation}`);
   }
 
   /**
-   * Build a transaction string wrapping substitution operation(s).
-   * Structure: (transaction txId timestamp substitution...)
+   * Build an indented transaction string using lino-objects-codec's formatIndented.
+   * Each transaction is human-readable with field names and indented formatting.
+   * Format:
+   *   txId
+   *     timestamp "..."
+   *     change "substitution-string"
+   *
    * @param {Object} params
-   * @returns {string} Full LiNo transaction string
+   * @param {string} params.txId - Transaction ID (UUIDv7)
+   * @param {string} params.timestamp - ISO 8601 timestamp
+   * @param {string[]} params.substitutions - Array of LiNo substitution strings
+   * @returns {string} Indented transaction string
    */
-  buildTransactionString({ txId, timestamp, substitutionStrings }) {
-    const subs = substitutionStrings.join(' ');
-    return `(transaction ${txId} ${Link.escapeReference(timestamp)} ${subs})`;
+  buildTransactionString({ txId, timestamp, substitutions }) {
+    const obj = { timestamp };
+    if (substitutions.length === 1) {
+      obj.change = substitutions[0];
+    } else {
+      substitutions.forEach((sub, i) => {
+        obj[`change${i + 1}`] = sub;
+      });
+    }
+    return formatIndented({ id: txId, obj });
+  }
+
+  /**
+   * Parse a transaction string produced by buildTransactionString.
+   * @param {string} text - Indented transaction string
+   * @returns {{ id: string, obj: Object }} Parsed transaction
+   */
+  parseTransactionString(text) {
+    return parseIndented({ text });
   }
 
   /**
@@ -165,14 +186,12 @@ class PublicLog {
       return { txId, messageId: null, timestamp, changes, confirmed: true };
     }
 
-    const subStrings = changes.map(change => this.buildSubstitutionString(change));
-    const messageText = this.buildTransactionString({
-      txId, timestamp, substitutionStrings: subStrings
-    });
+    const substitutions = changes.map(change => this.buildSubstitutionString(change));
+    const messageText = this.buildTransactionString({ txId, timestamp, substitutions });
 
     if (this.tracing) {
       console.log('PublicLog: logging batch', JSON.stringify({ txId, count: changes.length }, null, 2));
-      console.log('PublicLog: LiNo message:', messageText);
+      console.log('PublicLog: LiNo message:\n', messageText);
     }
 
     try {
