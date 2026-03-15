@@ -81,7 +81,39 @@ Changes use the link-cli single substitution format:
 
 ## Setup
 
-Create a `.env` file with your Telegram bot token:
+### 1. Install prerequisites
+
+Install `curl` and `unzip` (required to install Bun):
+
+```bash
+apt install curl unzip
+```
+
+Install [Bun](https://bun.sh):
+
+```bash
+curl -fsSL https://bun.sh/install | bash
+```
+
+After installation, reload your shell or follow the instructions printed by the installer to add Bun to your PATH.
+
+### 2. Clone the repository and install dependencies
+
+```bash
+git clone https://github.com/correlation-center/corcen-telegram-bot.git
+cd corcen-telegram-bot
+bun install
+```
+
+### 3. Configure environment
+
+Copy the example environment file and fill in your values:
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env` with your Telegram bot token (required) and optional settings:
 
 ```
 BOT_TOKEN=your-telegram-bot-token
@@ -90,13 +122,7 @@ PUBLIC_LOG_TRACING=true                    # Optional: enable detailed logging t
 ENABLE_REPOSTS=true                        # Optional: enable repost mode to forward user message and post metadata separately
 ```
 
-Install dependencies with Bun:
-
-```bash
-bun install
-```
-
-Start the bot with Bun:
+### 4. Start the bot
 
 ```bash
 bun run start
