@@ -1,77 +1,59 @@
-import { Parser } from '@linksplatform/protocols-lino';
+import { Link } from '@linksplatform/protocols-lino';
 import { v7 as uuidv7 } from 'uuid';
 
 /**
  * PublicLog manages a public audit log of all database changes.
- * Changes are posted to a Telegram channel in LiNo (Links Notation) format.
+ * Changes are posted to a Telegram channel in LiNo (Links Notation) format
+ * using link substitution operations:
+ *   - Creation: (() (...)) - replace nothing with a new link
+ *   - Update: ((...) (...)) - replace old link with new link
+ *   - Deletion: ((...) ()) - replace link with nothing
+ *
  * This creates a transparent, immutable history that can be used to reconstruct
- * the current database state.
+ * the current database state using link-cli.
  */
 class PublicLog {
   constructor({ telegram, logChannel, tracing = false }) {
     this.telegram = telegram;
     this.logChannel = logChannel;
     this.tracing = tracing;
-    this.parser = new Parser();
-    // Track pending transactions for async confirmation
-    this.pendingTransactions = new Map();
   }
 
   /**
-   * Log a database change to the public channel in LiNo format.
+   * Log a database change to the public channel as a link substitution operation.
    * @param {Object} change - The change object
    * @param {string} change.operation - Operation type: 'create', 'update', 'delete'
-   * @param {string} change.entity - Entity type: 'user', 'need', 'resource'
-   * @param {string} change.userId - User ID
-   * @param {Object} change.data - The data being changed
-   * @param {Object} [change.previousData] - Previous data (for updates)
+   * @param {string} change.entity - Entity type: 'need', 'resource', 'user'
+   * @param {Object} change.data - The new data (for create/update)
+   * @param {Object} [change.previousData] - Previous data (for update/delete)
    * @returns {Promise<Object>} Transaction object with txId and messageId
    */
   async logChange(change) {
     const txId = uuidv7();
     const timestamp = new Date().toISOString();
 
-    // If no log channel configured, skip public logging
     if (!this.logChannel) {
       if (this.tracing) {
         console.log('PublicLog: no log channel configured, skipping public logging');
       }
-      return {
-        txId,
-        messageId: null,
-        timestamp,
-        change,
-        confirmed: true // Local-only mode
-      };
+      return { txId, messageId: null, timestamp, change, confirmed: true };
     }
 
-    // Build LiNo representation of the change
-    const linoData = this.buildLinoChange({
-      txId,
-      timestamp,
-      ...change
+    const subString = this.buildSubstitutionString(change);
+    const messageText = this.buildTransactionString({
+      txId, timestamp, substitutionStrings: [subString]
     });
 
     if (this.tracing) {
       console.log('PublicLog: logging change', JSON.stringify({ txId, change }, null, 2));
-      console.log('PublicLog: LiNo representation:', linoData);
+      console.log('PublicLog: LiNo message:', messageText);
     }
 
     try {
-      // Post change to public channel
       const message = await this.telegram.sendMessage(
         this.logChannel,
-        linoData,
-        { parse_mode: 'HTML' }
+        messageText
       );
-
-      const transaction = {
-        txId,
-        messageId: message.message_id,
-        timestamp,
-        change,
-        confirmed: true
-      };
 
       if (this.tracing) {
         console.log('PublicLog: change logged successfully', {
@@ -80,11 +62,15 @@ class PublicLog {
         });
       }
 
-      return transaction;
+      return {
+        txId,
+        messageId: message.message_id,
+        timestamp,
+        change,
+        confirmed: true
+      };
     } catch (error) {
       console.error('PublicLog: failed to log change', error);
-
-      // Return unconfirmed transaction
       return {
         txId,
         messageId: null,
@@ -97,60 +83,70 @@ class PublicLog {
   }
 
   /**
-   * Build LiNo representation of a database change.
-   * @param {Object} params - Change parameters
-   * @returns {string} LiNo formatted string
+   * Build a link representing the entity data.
+   * Structure: (entity guid userId description channelMessageId timestamp)
+   * @param {string} entity - Entity type
+   * @param {Object} data - Entity data
+   * @returns {Link}
    */
-  buildLinoChange({ txId, timestamp, operation, entity, userId, data, previousData }) {
-    // Create a readable LiNo format that represents the change
-    const lines = [];
+  buildEntityLink(entity, data) {
+    const values = [new Link(entity)];
 
-    // Transaction header
-    lines.push(`<b>Transaction: ${txId}</b>`);
-    lines.push(`<code>${timestamp}</code>`);
-    lines.push('');
-
-    // Change details in LiNo format
-    lines.push(`(change:`);
-    lines.push(`  operation: ${operation}`);
-    lines.push(`  entity: ${entity}`);
-    lines.push(`  userId: ${userId}`);
-
-    if (data) {
-      lines.push(`  data:`);
-      this.appendDataToLino(lines, data, '    ');
+    if (data.guid) values.push(new Link(String(data.guid)));
+    if (data.userId) values.push(new Link(String(data.userId)));
+    if (data.description !== undefined) values.push(new Link(String(data.description)));
+    if (data.channelMessageId !== undefined && data.channelMessageId !== null) {
+      values.push(new Link(String(data.channelMessageId)));
     }
+    if (data.createdAt) values.push(new Link(String(data.createdAt)));
+    if (data.updatedAt) values.push(new Link(String(data.updatedAt)));
 
-    if (previousData && operation === 'update') {
-      lines.push(`  previousData:`);
-      this.appendDataToLino(lines, previousData, '    ');
-    }
-
-    lines.push(`)`);
-    return lines.join('\n');
+    return new Link(null, values);
   }
 
   /**
-   * Helper to append data fields to LiNo format with indentation.
+   * Build a link substitution string for a change.
+   * Uses the link-cli single substitution format:
+   * - Creation: (() (entity ...))
+   * - Update: ((entity ...old) (entity ...new))
+   * - Deletion: ((entity ...old) ())
+   *
+   * Note: We build the string manually because the LiNo Link API
+   * drops empty links () when used as values in formatValue().
+   * @param {Object} change
+   * @returns {string} LiNo substitution string
    */
-  appendDataToLino(lines, data, indent) {
-    for (const [key, value] of Object.entries(data)) {
-      if (value === null || value === undefined) continue;
+  buildSubstitutionString(change) {
+    const { operation, entity, data, previousData } = change;
 
-      if (typeof value === 'object' && !Array.isArray(value)) {
-        lines.push(`${indent}${key}:`);
-        this.appendDataToLino(lines, value, indent + '  ');
-      } else if (Array.isArray(value)) {
-        lines.push(`${indent}${key}: [${value.length} items]`);
-      } else if (typeof value === 'string') {
-        // Escape and truncate long strings
-        const truncated = value.length > 100 ? value.substring(0, 97) + '...' : value;
-        const escaped = truncated.replace(/</g, '&lt;').replace(/>/g, '&gt;');
-        lines.push(`${indent}${key}: "${escaped}"`);
-      } else {
-        lines.push(`${indent}${key}: ${value}`);
-      }
+    if (operation === 'create') {
+      const newLink = this.buildEntityLink(entity, data);
+      return `(() ${newLink.toString()})`;
     }
+
+    if (operation === 'update') {
+      const oldLink = this.buildEntityLink(entity, previousData);
+      const newLink = this.buildEntityLink(entity, data);
+      return `(${oldLink.toString()} ${newLink.toString()})`;
+    }
+
+    if (operation === 'delete') {
+      const oldLink = this.buildEntityLink(entity, previousData);
+      return `(${oldLink.toString()} ())`;
+    }
+
+    throw new Error(`Unknown operation: ${operation}`);
+  }
+
+  /**
+   * Build a transaction string wrapping substitution operation(s).
+   * Structure: (transaction txId timestamp substitution...)
+   * @param {Object} params
+   * @returns {string} Full LiNo transaction string
+   */
+  buildTransactionString({ txId, timestamp, substitutionStrings }) {
+    const subs = substitutionStrings.join(' ');
+    return `(transaction ${txId} ${Link.escapeReference(timestamp)} ${subs})`;
   }
 
   /**
@@ -162,38 +158,27 @@ class PublicLog {
     const txId = uuidv7();
     const timestamp = new Date().toISOString();
 
-    // If no log channel configured, skip public logging
     if (!this.logChannel) {
       if (this.tracing) {
         console.log('PublicLog: no log channel configured, skipping batch logging');
       }
-      return {
-        txId,
-        messageId: null,
-        timestamp,
-        changes,
-        confirmed: true // Local-only mode
-      };
+      return { txId, messageId: null, timestamp, changes, confirmed: true };
     }
 
-    const lines = [];
-    lines.push(`<b>Batch Transaction: ${txId}</b>`);
-    lines.push(`<code>${timestamp}</code>`);
-    lines.push(`<i>${changes.length} changes</i>`);
-    lines.push('');
+    const subStrings = changes.map(change => this.buildSubstitutionString(change));
+    const messageText = this.buildTransactionString({
+      txId, timestamp, substitutionStrings: subStrings
+    });
 
-    for (let i = 0; i < changes.length; i++) {
-      const change = changes[i];
-      lines.push(`${i + 1}. ${change.operation} ${change.entity} (user: ${change.userId})`);
+    if (this.tracing) {
+      console.log('PublicLog: logging batch', JSON.stringify({ txId, count: changes.length }, null, 2));
+      console.log('PublicLog: LiNo message:', messageText);
     }
-
-    const linoData = lines.join('\n');
 
     try {
       const message = await this.telegram.sendMessage(
         this.logChannel,
-        linoData,
-        { parse_mode: 'HTML' }
+        messageText
       );
 
       return {
@@ -205,7 +190,6 @@ class PublicLog {
       };
     } catch (error) {
       console.error('PublicLog: failed to log batch changes', error);
-
       return {
         txId,
         messageId: null,
@@ -214,34 +198,6 @@ class PublicLog {
         confirmed: false,
         error: error.message
       };
-    }
-  }
-
-  /**
-   * Get transaction status.
-   * @param {string} txId - Transaction ID
-   * @returns {Promise<Object|null>} Transaction status or null if not found
-   */
-  async getTransactionStatus(txId) {
-    return this.pendingTransactions.get(txId) || null;
-  }
-
-  /**
-   * Verify a transaction was logged successfully.
-   * @param {string} txId - Transaction ID
-   * @param {number} messageId - Message ID in the log channel
-   * @returns {Promise<boolean>} True if verified
-   */
-  async verifyTransaction(txId, messageId) {
-    try {
-      // Try to retrieve the message from the channel
-      const message = await this.telegram.getChat(this.logChannel);
-      // If we can access the channel, assume the message exists
-      // (Telegram doesn't provide a direct way to fetch a specific message)
-      return true;
-    } catch (error) {
-      console.error('PublicLog: failed to verify transaction', error);
-      return false;
     }
   }
 }

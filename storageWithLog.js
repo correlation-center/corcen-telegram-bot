@@ -1,23 +1,32 @@
+import fs from 'fs';
 import Storage from './storage.js';
 import PublicLog from './publicLog.js';
 import _ from 'lodash';
 
 /**
- * StorageWithLog wraps Storage and adds public logging to all write operations.
- * This creates a transparent audit trail of all database changes in a Telegram channel.
+ * StorageWithLog wraps Storage and uses the public log as the backbone
+ * of all operations. The flow is:
+ *
+ * 1. Detect changes between previous and current state
+ * 2. Write changes to public log (Telegram channel) first
+ * 3. Once confirmed, save transactions locally as links notation text
+ * 4. Mirror changes to local database (lowdb cache)
+ *
+ * Local storage has two forms (both derived from the public log):
+ * - transactions.lino: Text-based log of all transactions in links notation
+ * - db.json: Fast cache for reads (lowdb, to be replaced by link-cli)
  */
 class StorageWithLog {
-  constructor({ telegram, logChannel, tracing = false }) {
+  constructor({ telegram, logChannel, tracing = false, transactionLogPath = 'transactions.lino' }) {
     this.storage = new Storage();
     this.publicLog = new PublicLog({ telegram, logChannel, tracing });
     this.tracing = tracing;
-    // Track previous state to detect changes
+    this.transactionLogPath = transactionLogPath;
     this.previousState = null;
   }
 
   async initDB() {
     await this.storage.initDB();
-    // Capture initial state
     await this.captureState();
   }
 
@@ -27,53 +36,74 @@ class StorageWithLog {
 
   async readDB() {
     await this.storage.readDB();
-    // Update our state snapshot
     await this.captureState();
   }
 
-  /**
-   * Capture current database state for change detection.
-   */
   async captureState() {
     await this.storage.readDB();
     this.previousState = _.cloneDeep(this.storage.db.data);
   }
 
   /**
-   * Write to database and log all changes to public log.
+   * Write to database with public log as backbone.
+   * Changes are logged to the public channel first, then mirrored locally.
    */
   async writeDB() {
-    // Detect what changed
     const changes = this.detectChanges();
 
     if (changes.length === 0) {
       if (this.tracing) {
-        console.log('StorageWithLog: no changes detected, skipping write');
+        console.log('StorageWithLog: no changes detected, writing local state');
       }
+      await this.storage.writeDB();
+      await this.captureState();
       return;
     }
 
     if (this.tracing) {
-      console.log(`StorageWithLog: detected ${changes.length} changes`);
+      console.log(`StorageWithLog: detected ${changes.length} changes, writing to public log first`);
     }
 
-    // Log changes to public log
+    // Step 1: Write to public log first (backbone of all operations)
+    let transaction;
     try {
       if (changes.length === 1) {
-        await this.publicLog.logChange(changes[0]);
+        transaction = await this.publicLog.logChange(changes[0]);
       } else {
-        await this.publicLog.logBatchChanges(changes);
+        transaction = await this.publicLog.logBatchChanges(changes);
       }
     } catch (error) {
-      console.error('StorageWithLog: failed to log changes to public log', error);
-      // Continue with local write even if public log fails
+      console.error('StorageWithLog: failed to write to public log', error);
+      // Still write locally but mark as unconfirmed
+      transaction = { confirmed: false, error: error.message };
     }
 
-    // Write to local database
-    await this.storage.writeDB();
+    // Step 2: Save transaction locally as links notation text
+    if (transaction && transaction.txId) {
+      this.appendTransactionLog(transaction);
+    }
 
-    // Update state snapshot after successful write
+    // Step 3: Mirror changes to local database cache
+    await this.storage.writeDB();
     await this.captureState();
+
+    return transaction;
+  }
+
+  /**
+   * Append a transaction record to the local links notation log file.
+   * @param {Object} transaction
+   */
+  appendTransactionLog(transaction) {
+    try {
+      const logLine = `${transaction.txId} ${transaction.timestamp} confirmed=${transaction.confirmed}\n`;
+      fs.appendFileSync(this.transactionLogPath, logLine);
+      if (this.tracing) {
+        console.log('StorageWithLog: appended transaction to local log', transaction.txId);
+      }
+    } catch (error) {
+      console.error('StorageWithLog: failed to append to transaction log', error);
+    }
   }
 
   /**
@@ -85,10 +115,6 @@ class StorageWithLog {
     const currentState = this.storage.db.data;
 
     if (!this.previousState || !this.previousState.users) {
-      // Initial state, log all as creates
-      if (this.tracing) {
-        console.log('StorageWithLog: no previous state, treating all as new');
-      }
       return changes;
     }
 
@@ -101,8 +127,8 @@ class StorageWithLog {
         changes.push({
           operation: 'create',
           entity: 'user',
-          userId,
           data: {
+            userId,
             needs: currentUsers[userId].needs?.length || 0,
             resources: currentUsers[userId].resources?.length || 0
           }
@@ -142,8 +168,8 @@ class StorageWithLog {
         changes.push({
           operation: 'delete',
           entity: 'user',
-          userId,
           previousData: {
+            userId,
             needs: previousUsers[userId].needs?.length || 0,
             resources: previousUsers[userId].resources?.length || 0
           }
@@ -158,19 +184,18 @@ class StorageWithLog {
    * Detect changes in items (needs or resources) for a user.
    */
   detectItemChanges({ userId, entity, currentItems, previousItems, changes }) {
-    // Build maps by guid for efficient comparison
     const currentMap = new Map(currentItems.map(item => [item.guid, item]));
     const previousMap = new Map(previousItems.map(item => [item.guid, item]));
 
-    // Check for new items
+    // New items
     for (const [guid, item] of currentMap) {
       if (!previousMap.has(guid)) {
         changes.push({
           operation: 'create',
           entity,
-          userId,
           data: {
             guid: item.guid,
+            userId,
             description: item.description,
             channelMessageId: item.channelMessageId,
             createdAt: item.createdAt
@@ -179,12 +204,11 @@ class StorageWithLog {
       }
     }
 
-    // Check for updated items
+    // Updated items
     for (const [guid, currentItem] of currentMap) {
       const previousItem = previousMap.get(guid);
       if (!previousItem) continue;
 
-      // Compare items (excluding updatedAt which changes frequently)
       const currentClean = _.omit(currentItem, 'updatedAt');
       const previousClean = _.omit(previousItem, 'updatedAt');
 
@@ -192,41 +216,42 @@ class StorageWithLog {
         changes.push({
           operation: 'update',
           entity,
-          userId,
           data: {
             guid: currentItem.guid,
+            userId,
             description: currentItem.description,
             channelMessageId: currentItem.channelMessageId,
             updatedAt: currentItem.updatedAt
           },
           previousData: {
+            guid: previousItem.guid,
+            userId,
             description: previousItem.description,
-            channelMessageId: previousItem.channelMessageId
+            channelMessageId: previousItem.channelMessageId,
+            createdAt: previousItem.createdAt
           }
         });
       }
     }
 
-    // Check for deleted items
+    // Deleted items
     for (const [guid, item] of previousMap) {
       if (!currentMap.has(guid)) {
         changes.push({
           operation: 'delete',
           entity,
-          userId,
           previousData: {
             guid: item.guid,
+            userId,
             description: item.description,
-            channelMessageId: item.channelMessageId
+            channelMessageId: item.channelMessageId,
+            createdAt: item.createdAt
           }
         });
       }
     }
   }
 
-  /**
-   * Direct access to underlying storage for read-only operations.
-   */
   get db() {
     return this.storage.db;
   }
