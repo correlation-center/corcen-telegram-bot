@@ -3,7 +3,7 @@ import { fileURLToPath } from 'url';
 import fs from 'fs';
 import path from 'path';
 import { Telegraf, Markup } from 'telegraf';
-import Storage from './storage.js';
+import StorageWithLog from './storageWithLog.js';
 import { v7 as uuidv7 } from 'uuid';
 import { buildUserMention } from './buildUserMention.js';
 import _ from 'lodash';
@@ -27,8 +27,50 @@ function t(ctx, key, vars = {}) {
   return text;
 }
 
-// Initialize database
-const storage = new Storage();
+// Initialize bot (needed for storage initialization)
+// Wrap bot initialization with comprehensive error handling for readonly property issue
+const bot = (() => {
+  // Set up global error handler for unhandled exceptions during bot operations
+  const originalHandler = process.listeners('uncaughtException');
+  process.removeAllListeners('uncaughtException');
+
+  process.on('uncaughtException', (error) => {
+    if (error.message && error.message.includes('Attempted to assign to readonly property')) {
+      console.error('Fatal error: Bot token configuration error.');
+      console.error('This is typically caused by an invalid BOT_TOKEN or network connectivity issues.');
+      console.error('Please verify your BOT_TOKEN environment variable and internet connection.');
+      process.exit(1);
+    }
+
+    // Re-emit to original handlers if not our error
+    originalHandler.forEach(handler => handler(error));
+    if (originalHandler.length === 0) {
+      console.error('Uncaught Exception:', error);
+      process.exit(1);
+    }
+  });
+
+  try {
+    return new Telegraf(process.env.BOT_TOKEN);
+  } catch (error) {
+    console.error('Failed to initialize Telegram bot:', error.message);
+    process.exit(1);
+  }
+})();
+
+// Initialize database with public logging (if PUBLIC_LOG_CHANNEL is set)
+const PUBLIC_LOG_CHANNEL = process.env.PUBLIC_LOG_CHANNEL;
+const storage = PUBLIC_LOG_CHANNEL
+  ? new StorageWithLog({
+      telegram: bot.telegram,
+      logChannel: PUBLIC_LOG_CHANNEL,
+      tracing: process.env.PUBLIC_LOG_TRACING === 'true'
+    })
+  : new StorageWithLog({
+      telegram: bot.telegram,
+      logChannel: null, // No public logging
+      tracing: false
+    });
 await storage.initDB();
 
 /**
@@ -233,35 +275,7 @@ async function migrateDeleteUserChannelMessages({ userId, tracing = false } = {}
   console.log(`Deleted ${deletedCount} channel message(s) for user ${userId}`);
 }
 
-// Wrap bot initialization with comprehensive error handling for readonly property issue
-const bot = (() => {
-  // Set up global error handler for unhandled exceptions during bot operations
-  const originalHandler = process.listeners('uncaughtException');
-  process.removeAllListeners('uncaughtException');
-  
-  process.on('uncaughtException', (error) => {
-    if (error.message && error.message.includes('Attempted to assign to readonly property')) {
-      console.error('Fatal error: Bot token configuration error.');
-      console.error('This is typically caused by an invalid BOT_TOKEN or network connectivity issues.');
-      console.error('Please verify your BOT_TOKEN environment variable and internet connection.');
-      process.exit(1);
-    }
-    
-    // Re-emit to original handlers if not our error
-    originalHandler.forEach(handler => handler(error));
-    if (originalHandler.length === 0) {
-      console.error('Uncaught Exception:', error);
-      process.exit(1);
-    }
-  });
-  
-  try {
-    return new Telegraf(process.env.BOT_TOKEN);
-  } catch (error) {
-    console.error('Failed to initialize Telegram bot:', error.message);
-    process.exit(1);
-  }
-})();
+// Bot is already initialized above (before storage initialization)
 const pendingActions = {}; // Structure: { "userId_chatId": action }
 const CHANNEL_USERNAME = '@CorrelationCenter';
 // Daily posting limits per user

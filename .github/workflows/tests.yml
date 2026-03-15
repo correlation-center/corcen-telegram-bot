@@ -1,0 +1,58 @@
+name: Tests
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref == 'refs/heads/main' }}
+
+jobs:
+  test:
+    name: Test (Node.js on ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Simulate fresh merge with base branch (PR only)
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        shell: bash
+        run: |
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git fetch origin "$BASE_REF"
+          BEHIND_COUNT=$(git rev-list --count HEAD..origin/$BASE_REF)
+          if [ "$BEHIND_COUNT" -eq 0 ]; then
+            echo "Merge preview is up-to-date with $BASE_REF."
+          else
+            echo "Base branch has $BEHIND_COUNT new commit(s). Simulating fresh merge..."
+            if git merge origin/$BASE_REF --no-edit; then
+              echo "Fresh merge simulation successful."
+            else
+              echo "::error::Merge conflict detected! PR needs to be rebased/updated."
+              exit 1
+            fi
+          fi
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run tests
+        run: npm test

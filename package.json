@@ -6,11 +6,13 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "test": "node --test"
+    "test": "node --test tests/"
   },
   "dependencies": {
     "@flla/telegram-format": "^3.1.2",
+    "@linksplatform/protocols-lino": "^0.7.0",
     "dotenv": "^16.0.0",
+    "lino-objects-codec": "^0.3.1",
     "lodash": "^4.17.21",
     "lowdb": "^3.0.0",
     "telegraf": "^4.12.3",
