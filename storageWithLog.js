@@ -98,15 +98,32 @@ class StorageWithLog {
    */
   appendTransactionLog(transaction) {
     try {
-      const logEntry = this.publicLog.buildTransactionString({
-        txId: transaction.txId,
-        timestamp: transaction.timestamp,
-        substitutions: transaction.change
-          ? [this.publicLog.buildSubstitutionString(transaction.change)]
-          : transaction.changes
-            ? transaction.changes.map(c => this.publicLog.buildSubstitutionString(c))
-            : [`(confirmed ${transaction.confirmed})`],
-      });
+      let logEntry;
+      if (transaction.change) {
+        logEntry = this.publicLog.formatTransaction({
+          txId: transaction.txId,
+          timestamp: transaction.timestamp,
+          change: transaction.change,
+        });
+      } else if (transaction.changes) {
+        logEntry = transaction.changes.length === 1
+          ? this.publicLog.formatTransaction({
+              txId: transaction.txId,
+              timestamp: transaction.timestamp,
+              change: transaction.changes[0],
+            })
+          : this.publicLog.formatBatchTransaction({
+              txId: transaction.txId,
+              timestamp: transaction.timestamp,
+              changes: transaction.changes,
+            });
+      } else {
+        logEntry = this.publicLog.formatTransaction({
+          txId: transaction.txId,
+          timestamp: transaction.timestamp,
+          change: { operation: 'create', entity: 'status', data: { confirmed: String(transaction.confirmed) } },
+        });
+      }
       fs.appendFileSync(this.transactionLogPath, logEntry + '\n');
       if (this.tracing) {
         console.log('StorageWithLog: appended transaction to local log', transaction.txId);
@@ -207,7 +224,6 @@ class StorageWithLog {
             guid: item.guid,
             userId,
             description: item.description,
-            channelMessageId: item.channelMessageId,
             createdAt: item.createdAt
           }
         });
@@ -230,14 +246,12 @@ class StorageWithLog {
             guid: currentItem.guid,
             userId,
             description: currentItem.description,
-            channelMessageId: currentItem.channelMessageId,
             updatedAt: currentItem.updatedAt
           },
           previousData: {
             guid: previousItem.guid,
             userId,
             description: previousItem.description,
-            channelMessageId: previousItem.channelMessageId,
             createdAt: previousItem.createdAt
           }
         });
@@ -254,7 +268,6 @@ class StorageWithLog {
             guid: item.guid,
             userId,
             description: item.description,
-            channelMessageId: item.channelMessageId,
             createdAt: item.createdAt
           }
         });

@@ -1,11 +1,14 @@
 /**
- * Example script demonstrating LiNo-based public logging with link substitution operations.
+ * Example script demonstrating LiNo-based public logging with deeply nested
+ * indented transaction format.
  *
- * This script shows how database changes are logged to a Telegram channel
- * using the link-cli substitution format:
- *   - Creation: (() (...)) - replace nothing with a new link
- *   - Update: ((...) (...)) - replace old link with new link
- *   - Deletion: ((...) ()) - replace link with nothing
+ * Each transaction uses link-cli substitution operations:
+ *   - Creation: (() ((entity (fields...)))) - replace nothing with a new link
+ *   - Update: (((entity (...old))) ((entity (...new)))) - replace old with new
+ *   - Deletion: (((entity (...old))) ()) - replace link with nothing
+ *
+ * Note: channelMessageId is NOT included in transactions because we write
+ * to the public log first and get the message ID only after confirmation.
  *
  * Usage:
  *   node examples/test-public-log.js
@@ -29,8 +32,8 @@ class MockTelegram {
 }
 
 async function demonstratePublicLog() {
-  console.log('Public Log - Link Substitution Operations Demo');
-  console.log('================================================\n');
+  console.log('Public Log - Deeply Nested Indented Transaction Format Demo');
+  console.log('=============================================================\n');
 
   const publicLog = new PublicLog({
     telegram: new MockTelegram(),
@@ -38,22 +41,21 @@ async function demonstratePublicLog() {
     tracing: true
   });
 
-  // Example 1: Create a need - (() (need ...))
+  // Example 1: Create a need
   console.log('1. Creating a need (replace nothing with new link)...\n');
   const needGuid = uuidv7();
-  await publicLog.logChange({
+  const createResult = await publicLog.logChange({
     operation: 'create',
     entity: 'need',
     data: {
       guid: needGuid,
       userId: '123456',
       description: 'Looking for a bicycle in good condition',
-      channelMessageId: 42,
       createdAt: new Date().toISOString()
     }
   });
 
-  // Example 2: Update a need - ((need ...old) (need ...new))
+  // Example 2: Update a need
   console.log('\n2. Updating a need (replace old link with new link)...\n');
   await publicLog.logChange({
     operation: 'update',
@@ -61,20 +63,18 @@ async function demonstratePublicLog() {
     data: {
       guid: needGuid,
       userId: '123456',
-      description: 'Looking for a bicycle in good condition',
-      channelMessageId: 99,
+      description: 'Looking for a RED bicycle in good condition',
       updatedAt: new Date().toISOString()
     },
     previousData: {
       guid: needGuid,
       userId: '123456',
       description: 'Looking for a bicycle in good condition',
-      channelMessageId: 42,
-      createdAt: new Date().toISOString()
+      createdAt: createResult.timestamp
     }
   });
 
-  // Example 3: Delete a need - ((need ...) ())
+  // Example 3: Delete a need
   console.log('\n3. Deleting a need (replace link with nothing)...\n');
   await publicLog.logChange({
     operation: 'delete',
@@ -82,9 +82,8 @@ async function demonstratePublicLog() {
     previousData: {
       guid: needGuid,
       userId: '123456',
-      description: 'Looking for a bicycle in good condition',
-      channelMessageId: 99,
-      createdAt: new Date().toISOString()
+      description: 'Looking for a RED bicycle in good condition',
+      createdAt: createResult.timestamp
     }
   });
 
@@ -114,10 +113,10 @@ async function demonstratePublicLog() {
   ]);
 
   console.log('\n=== Demo Complete ===');
-  console.log('\nLink substitution operations:');
-  console.log('  Create: (() (entity ...)) - replace nothing with link');
-  console.log('  Update: ((entity ...old) (entity ...new)) - replace old with new');
-  console.log('  Delete: ((entity ...) ()) - replace link with nothing');
+  console.log('\nLink substitution operations (deeply indented):');
+  console.log('  Create: (() ((entity (fields...)))) - replace nothing with link');
+  console.log('  Update: (((entity (...old))) ((entity (...new)))) - replace old with new');
+  console.log('  Delete: (((entity (...old))) ()) - replace link with nothing');
 }
 
 demonstratePublicLog().catch(console.error);
