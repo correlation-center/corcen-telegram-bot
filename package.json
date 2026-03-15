@@ -6,7 +6,7 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "test": "node --test"
+    "test": "node --test tests/"
   },
   "dependencies": {
     "@flla/telegram-format": "^3.1.2",

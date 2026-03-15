@@ -27,7 +27,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert';
-import PublicLog from './publicLog.js';
+import PublicLog from '../publicLog.js';
 import { v7 as uuidv7 } from 'uuid';
 
 // Mock Telegram API
